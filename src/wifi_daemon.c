@@ -3,12 +3,14 @@
 #include "third_party/wpa_ctrl.h"
 
 #include <errno.h>
+#include <pthread.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/un.h>
+#include <sys/select.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -34,6 +36,10 @@ typedef struct {
 
 static volatile sig_atomic_t g_stop = 0;
 static struct wpa_ctrl* g_ctrl = NULL;
+static struct wpa_ctrl* g_ctrl_ev = NULL;
+static pthread_mutex_t g_scan_mutex = PTHREAD_MUTEX_INITIALIZER;
+static char g_scan_cache[BUF_SIZE];
+static int g_scan_valid = 0;
 
 static void on_sigint(int sig)
 {
@@ -55,7 +61,24 @@ static int ensure_ctrl(void)
         return 0;
     }
     g_ctrl = wpa_ctrl_open(WLAN_CTRL_PATH);
-    return (g_ctrl != NULL) ? 0 : -1;
+    if (g_ctrl == NULL) {
+        return -1;
+    }
+    /* open event monitor connection */
+    g_ctrl_ev = wpa_ctrl_open2(WLAN_CTRL_PATH, NULL);
+    if (g_ctrl_ev == NULL) {
+        wpa_ctrl_close(g_ctrl);
+        g_ctrl = NULL;
+        return -1;
+    }
+    if (wpa_ctrl_attach(g_ctrl_ev) != 0) {
+        wpa_ctrl_close(g_ctrl_ev);
+        wpa_ctrl_close(g_ctrl);
+        g_ctrl = NULL;
+        g_ctrl_ev = NULL;
+        return -1;
+    }
+    return 0;
 }
 
 static void close_ctrl(void)
@@ -63,6 +86,11 @@ static void close_ctrl(void)
     if (g_ctrl != NULL) {
         wpa_ctrl_close(g_ctrl);
         g_ctrl = NULL;
+    }
+    if (g_ctrl_ev != NULL) {
+        wpa_ctrl_detach(g_ctrl_ev);
+        wpa_ctrl_close(g_ctrl_ev);
+        g_ctrl_ev = NULL;
     }
 }
 
@@ -86,6 +114,65 @@ static int run_cmd(const char* cmd, char* out, size_t out_sz)
     }
     out[len] = '\0';
     return 0;
+}
+
+static void update_scan_cache(void)
+{
+    char buf[BUF_SIZE];
+    size_t len = sizeof(buf) - 1;
+
+    if (g_ctrl == NULL) {
+        return;
+    }
+
+    memset(buf, 0, sizeof(buf));
+    if (wpa_ctrl_request(g_ctrl, "SCAN_RESULTS", 12, buf, &len, NULL) == 0) {
+        buf[len] = '\0';
+        pthread_mutex_lock(&g_scan_mutex);
+        snprintf(g_scan_cache, sizeof(g_scan_cache), "%s", buf);
+        g_scan_valid = 1;
+        pthread_mutex_unlock(&g_scan_mutex);
+    }
+}
+
+static void* event_thread(void* arg)
+{
+    (void)arg;
+    char buf[BUF_SIZE];
+    size_t len;
+
+    while (!g_stop) {
+        if (g_ctrl_ev == NULL) {
+            usleep(100000);
+            continue;
+        }
+
+        len = sizeof(buf) - 1;
+        memset(buf, 0, sizeof(buf));
+
+        /* use poll on the fd */
+        int fd = wpa_ctrl_get_fd(g_ctrl_ev);
+        if (fd < 0) {
+            usleep(100000);
+            continue;
+        }
+
+        fd_set rfds;
+        FD_ZERO(&rfds);
+        FD_SET(fd, &rfds);
+
+        int ret = select(fd + 1, &rfds, NULL, NULL, NULL);
+        if (ret > 0 && FD_ISSET(fd, &rfds)) {
+            if (wpa_ctrl_recv(g_ctrl_ev, buf, &len) == 0) {
+                buf[len] = '\0';
+                /* check for scan results event */
+                if (strstr(buf, "CTRL-EVENT-SCAN-RESULTS") != NULL) {
+                    update_scan_cache();
+                }
+            }
+        }
+    }
+    return NULL;
 }
 
 static int is_protected(const char* flags)
@@ -193,21 +280,30 @@ static void handle_scan_start(int fd)
 
 static void handle_scan_get(int fd)
 {
-    char out[BUF_SIZE];
     known_network_t known[MAX_NETWORK_LINES];
     int known_count;
-    char* saveptr = NULL;
+    char* saveptr;
     char* line;
 
-    if (run_cmd("SCAN_RESULTS", out, sizeof(out)) != 0) {
-        send_line(fd, "ERR\tSCAN_GET\n");
+    pthread_mutex_lock(&g_scan_mutex);
+    if (!g_scan_valid) {
+        pthread_mutex_unlock(&g_scan_mutex);
+        /* no scan results yet */
+        send_line(fd, "OK\tSCAN\n");
+        send_line(fd, "END\n");
         return;
     }
+    /* copy cache under lock */
+    char scan_buf[BUF_SIZE];
+    snprintf(scan_buf, sizeof(scan_buf), "%s", g_scan_cache);
+    pthread_mutex_unlock(&g_scan_mutex);
 
     known_count = parse_known_networks(known, MAX_NETWORK_LINES);
 
     send_line(fd, "OK\tSCAN\n");
-    line = strtok_r(out, "\n", &saveptr); /* header */
+
+    saveptr = NULL;
+    line = strtok_r(scan_buf, "\n", &saveptr); /* header */
     line = strtok_r(NULL, "\n", &saveptr);
     while (line != NULL) {
         char bssid[64] = {0};
@@ -380,9 +476,13 @@ int main(void)
 {
     int listen_fd;
     struct sockaddr_un addr;
+    pthread_t ev_tid;
 
     signal(SIGINT, on_sigint);
     signal(SIGTERM, on_sigint);
+
+    /* start event listener thread */
+    pthread_create(&ev_tid, NULL, event_thread, NULL);
 
     unlink(WIFI_SOCKET_PATH);
     listen_fd = socket(AF_UNIX, SOCK_STREAM, 0);

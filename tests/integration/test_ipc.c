@@ -78,6 +78,10 @@ int main(int argc, char *argv[]) {
     snprintf(cmd, sizeof(cmd), "SCAN_START");
     send_cmd(cmd);
 
+    /* give daemon time to receive scan results from wpa_supplicant */
+    printf("Waiting for scan results...\n");
+    sleep(3);
+
     printf("\n=== Test 3: SCAN_GET ===\n");
     snprintf(cmd, sizeof(cmd), "SCAN_GET");
     send_cmd(cmd);
