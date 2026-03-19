@@ -399,6 +399,13 @@ static void handle_scan_get(int fd)
     send_line(fd, "END\n");
 }
 
+static void handle_get_status(int fd)
+{
+    char resp[64];
+    snprintf(resp, sizeof(resp), "OK\tSTATUS\t%d\n", g_enabled);
+    send_line(fd, resp);
+}
+
 static void handle_disconnect(int fd)
 {
     char out[BUF_SIZE];
@@ -526,6 +533,8 @@ static void handle_client(int cfd)
             handle_disconnect(cfd);
         } else if (strcmp(cmd, "FORGET") == 0) {
             handle_forget(cfd, arg1);
+        } else if (strcmp(cmd, "GET_STATUS") == 0) {
+            handle_get_status(cfd);
         } else {
             send_line(cfd, "ERR\tUNKNOWN_CMD\n");
         }

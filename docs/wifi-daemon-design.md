@@ -32,7 +32,6 @@
 
 - 不提供并发多客户端处理
 - 不提供权限鉴权
-- 不提供事件推送（仅请求-响应）
 - 不做 DHCP/IP 层配置
 - 不支持 BSSID 定向连接、企业认证（802.1X）等高级特性
 
@@ -69,9 +68,10 @@
 
 ### 5.1 进程模型
 
-- 单进程、单线程、串行处理客户端请求
+- 单进程、多线程：主线程处理客户端请求，事件线程监听 wpa_supplicant 事件
 - 主循环 `accept()` 新连接后，读取一次请求并同步处理，随后关闭连接
-- 无任务队列，无异步事件循环
+- 事件线程通过 `wpa_ctrl_attach()` 订阅事件，收到 `CTRL-EVENT-SCAN-RESULTS` 时更新扫描缓存
+- 扫描结果缓存带互斥锁保护，支持 scan_id 机制追踪结果新鲜度
 
 ### 5.2 模块职责
 
@@ -104,7 +104,14 @@
 ### 6.2 全局状态
 
 - `g_stop`：退出标志（SIGINT/SIGTERM 设置）
+- `g_enabled`：WiFi 启用标志（SET_ENABLED 设置）
 - `g_ctrl`：到 `wpa_supplicant` 的控制连接（惰性初始化，可复用）
+- `g_ctrl_ev`：到 `wpa_supplicant` 的事件监控连接（用于异步接收扫描结果）
+- `g_scan_mutex`：`g_scan_cache` 的保护互斥锁
+- `g_ctrl_mutex`：`g_ctrl`/`g_ctrl_ev` 的保护互斥锁
+- `g_scan_cache`：扫描结果缓存
+- `g_scan_valid`：扫描结果是否有效
+- `g_scan_id`：递增的扫描 ID，客户端可判断结果是否更新
 
 ### 6.3 连接状态判定
 
@@ -132,27 +139,33 @@
 
 ### 7.3 命令与响应
 
+0. `GET_STATUS`
+- 行为：查询 WiFi 开关状态
+- 成功：`OK\tSTATUS\t<enabled>`
+  - `enabled`: `0` 表示已禁用，`1` 表示已启用
+
 1. `SET_ENABLED\t0|1`
-- 行为：`ifconfig wlan0 down|up`
+- 行为：`ifconfig wlan0 down|up`，启用时同时打开 wpa_ctrl 连接
 - 成功：`OK\tSTATE`
-- 失败：`ERR\tIF_DOWN` / `ERR\tIF_UP`
+- 失败：`ERR\tIF_DOWN` / `ERR\tIF_UP` / `ERR\tCTRL_OPEN`
 
 2. `SCAN_START`
-- 行为：转发 `SCAN`
-- 成功：`OK\tSCAN_STARTED`
+- 行为：转发 `SCAN`，递增 scan_id 使缓存失效
+- 成功：`OK\tSCAN_STARTED\t<scan_id>`
 - 失败：`ERR\tSCAN_START`
 
 3. `SCAN_GET`
 - 行为：
-  - 查询 `SCAN_RESULTS`
-  - 查询 `LIST_NETWORKS`
-  - 聚合输出 AP 列表
-- 成功头：`OK\tSCAN`
+  - 返回缓存的扫描结果（由事件线程异步更新）
+  - 查询 `LIST_NETWORKS` 判断 saved/connected 状态
+  - 按信号强度降序排列
+- 成功头：`OK\tSCAN\t<scan_id>`
 - 数据行：`AP\t<ssid>\t<signal>\t<secured>\t<saved>\t<connected>`
 - 结束：`END`
 - 失败：`ERR\tSCAN_GET`
 
 字段说明：
+- `scan_id`：递增整数，客户端可判断结果是否为自己发起的扫描产生
 - `secured`: flags 中包含 `WPA|WEP|SAE` 则为 `1`，否则 `0`
 - `saved`: SSID 出现在 `LIST_NETWORKS` 则为 `1`
 - `connected`: 对应 network flags 含 `[CURRENT]` 则为 `1`
@@ -215,7 +228,18 @@
 ## 9. 错误处理策略
 
 - 对外统一使用 `ERR\t<CODE>` 文本错误码
-- 大多数命令将 `wpa_ctrl` 非 0 返回或非 `OK` 文本视作失败
+- 错误码列表：
+  - `EINVAL`：参数无效
+  - `IF_UP`/`IF_DOWN`：`ifconfig` 命令执行失败
+  - `CTRL_OPEN`：wpa_ctrl 连接失败
+  - `SCAN_START`/`SCAN_GET`：扫描命令失败
+  - `ADD_NETWORK`/`SET_SSID`/`SET_PSK`：网络配置失败
+  - `SELECT_NETWORK`：网络选择失败
+  - `CONNECT_TIMEOUT`：连接超时（20秒）
+  - `DISCONNECT`：断开连接失败
+  - `NOT_FOUND`：要遗忘的网络不存在
+  - `FORGET`：遗忘网络失败
+  - `UNKNOWN_CMD`：未知命令
 - socket 层异常（`accept` 等）仅打印 `perror` 并在严重场景退出主循环
 
 ## 10. 安全与可靠性评估（当前实现）
@@ -227,8 +251,8 @@
 - `CONNECT` 直接将 SSID/密码拼接进 `SET_NETWORK ... "..."`。
 - 若输入含引号/控制字符，可能导致命令构造异常。
 
-3. 串行阻塞
-- 连接等待（最多 20 秒）期间，daemon 无法处理其它客户端请求。
+3. 并发有限
+- 多客户端可并发请求，但 `CONNECT`（最多 20 秒）期间会阻塞其他请求处理。
 
 4. 状态判断较弱
 - `wait_connected()` 使用子串匹配 SSID，存在误判可能（如同名前缀）。
