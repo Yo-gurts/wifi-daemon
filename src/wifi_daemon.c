@@ -310,18 +310,34 @@ static void handle_scan_start(int fd)
 {
     char out[BUF_SIZE];
     char resp[64];
+    int retry = 3;
 
     MLOG_INFO("SCAN_START");
-    if (run_cmd("SCAN", out, sizeof(out)) != 0) {
-        MLOG_ERR("SCAN command failed");
-        send_line(fd, "ERR\tSCAN_START\n");
-        return;
-    }
-    if (strstr(out, "OK") == NULL) {
+    while (retry-- > 0) {
+        if (run_cmd("SCAN", out, sizeof(out)) != 0) {
+            MLOG_ERR("SCAN command failed");
+            send_line(fd, "ERR\tSCAN_START\n");
+            return;
+        }
+        if (strstr(out, "OK") != NULL) {
+            break;
+        }
+        if (strstr(out, "FAIL-BUSY") != NULL) {
+            MLOG_WARN("SCAN busy, retrying...");
+            usleep(500000);
+            continue;
+        }
         MLOG_ERR("SCAN command not OK: %s", out);
         send_line(fd, "ERR\tSCAN_START\n");
         return;
     }
+
+    if (retry < 0 || strstr(out, "OK") == NULL) {
+        MLOG_ERR("SCAN failed after retries");
+        send_line(fd, "ERR\tSCAN_START\n");
+        return;
+    }
+
     /* increment scan_id and invalidate cache */
     g_scan_id++;
     pthread_mutex_lock(&g_scan_mutex);
@@ -354,6 +370,7 @@ static void handle_scan_get(int fd)
     if (!g_scan_valid) {
         pthread_mutex_unlock(&g_scan_mutex);
         /* no scan results yet */
+        MLOG_INFO("SCAN_GET: scan_id=%d, cache not ready", scan_id);
         snprintf(resp, sizeof(resp), "OK\tSCAN\t%d\n", scan_id);
         send_line(fd, resp);
         send_line(fd, "END\n");
@@ -387,9 +404,11 @@ static void handle_scan_get(int fd)
     snprintf(resp, sizeof(resp), "OK\tSCAN\t%d\n", scan_id);
     send_line(fd, resp);
 
+    MLOG_INFO("SCAN_GET: scan_id=%d, ap_count=%d", scan_id, ap_count);
+
     /* send sorted entries */
     for (int i = 0; i < ap_count; i++) {
-        ap_entry_t *ap = &aps[i];
+        ap_entry_t* ap = &aps[i];
         int saved = 0;
         int connected = 0;
         for (int j = 0; j < known_count; j++) {
