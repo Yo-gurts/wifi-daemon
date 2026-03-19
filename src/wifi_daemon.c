@@ -390,10 +390,10 @@ static void handle_scan_get(int fd)
                 break;
             }
         }
-        char out_line[256];
-        snprintf(out_line, sizeof(out_line), "AP\t%s\t%d\t%d\t%d\t%d\n",
-                 ap->ssid, ap->signal,
-                 is_protected(ap->flags) ? 1 : 0, saved, connected);
+        char out_line[512];
+        snprintf(out_line, sizeof(out_line), "AP\t%.63s\t%d\t%d\t%d\t%d\n",
+            ap->ssid, ap->signal,
+            is_protected(ap->flags) ? 1 : 0, saved, connected);
         send_line(fd, out_line);
     }
     send_line(fd, "END\n");
