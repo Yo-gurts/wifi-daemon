@@ -34,6 +34,14 @@ typedef struct {
     int connected;
 } ap_info_t;
 
+typedef struct {
+    char ssid[WIFI_MAX_SSID_LEN];
+    char bssid[64];
+    int freq;
+    int signal;
+    char flags[128];
+} ap_entry_t;
+
 static volatile sig_atomic_t g_stop = 0;
 static struct wpa_ctrl* g_ctrl = NULL;
 static struct wpa_ctrl* g_ctrl_ev = NULL;
@@ -286,14 +294,22 @@ static void handle_scan_start(int fd)
     send_line(fd, resp);
 }
 
+static int ap_cmp(const void *a, const void *b)
+{
+    const ap_entry_t *pa = (const ap_entry_t *)a;
+    const ap_entry_t *pb = (const ap_entry_t *)b;
+    /* descending order by signal strength */
+    return pb->signal - pa->signal;
+}
+
 static void handle_scan_get(int fd)
 {
     known_network_t known[MAX_NETWORK_LINES];
     int known_count;
-    char* saveptr;
-    char* line;
     char resp[64];
     int scan_id;
+    ap_entry_t aps[MAX_SCAN_LINES];
+    int ap_count = 0;
 
     pthread_mutex_lock(&g_scan_mutex);
     scan_id = g_scan_id;
@@ -312,42 +328,46 @@ static void handle_scan_get(int fd)
 
     known_count = parse_known_networks(known, MAX_NETWORK_LINES);
 
-    snprintf(resp, sizeof(resp), "OK\tSCAN\t%d\n", scan_id);
-    send_line(fd, resp);
-
-    saveptr = NULL;
-    line = strtok_r(scan_buf, "\n", &saveptr); /* header */
-    line = strtok_r(NULL, "\n", &saveptr);
-    while (line != NULL) {
-        char bssid[64] = {0};
-        int freq = 0;
-        int signal = -100;
-        char flags[128] = {0};
-        char ssid[WIFI_MAX_SSID_LEN] = {0};
-        int saved = 0;
-        int connected = 0;
-        int i;
-
-        if (sscanf(line, "%63[^\t]\t%d\t%d\t%127[^\t]\t%63[^\n]", bssid, &freq, &signal, flags, ssid) >= 4) {
-            if (ssid[0] != '\0') {
-                for (i = 0; i < known_count; i++) {
-                    if (strcmp(ssid, known[i].ssid) == 0) {
-                        saved = 1;
-                        if (strstr(known[i].flags, "[CURRENT]") != NULL) {
-                            connected = 1;
-                        }
-                        break;
-                    }
-                }
-                {
-                    char out_line[256];
-                    snprintf(out_line, sizeof(out_line), "AP\t%s\t%d\t%d\t%d\t%d\n", ssid, signal,
-                             is_protected(flags) ? 1 : 0, saved, connected);
-                    send_line(fd, out_line);
-                }
+    /* parse all entries */
+    char *saveptr;
+    char *line = strtok_r(scan_buf, "\n", &saveptr);
+    line = strtok_r(NULL, "\n", &saveptr); /* skip header */
+    while (line != NULL && ap_count < MAX_SCAN_LINES) {
+        ap_entry_t *ap = &aps[ap_count];
+        if (sscanf(line, "%63[^\t]\t%d\t%d\t%127[^\t]\t%63[^\n]",
+                   ap->bssid, &ap->freq, &ap->signal, ap->flags, ap->ssid) >= 4) {
+            if (ap->ssid[0] != '\0') {
+                ap_count++;
             }
         }
         line = strtok_r(NULL, "\n", &saveptr);
+    }
+
+    /* sort by signal strength descending */
+    qsort(aps, ap_count, sizeof(ap_entry_t), ap_cmp);
+
+    snprintf(resp, sizeof(resp), "OK\tSCAN\t%d\n", scan_id);
+    send_line(fd, resp);
+
+    /* send sorted entries */
+    for (int i = 0; i < ap_count; i++) {
+        ap_entry_t *ap = &aps[i];
+        int saved = 0;
+        int connected = 0;
+        for (int j = 0; j < known_count; j++) {
+            if (strcmp(ap->ssid, known[j].ssid) == 0) {
+                saved = 1;
+                if (strstr(known[j].flags, "[CURRENT]") != NULL) {
+                    connected = 1;
+                }
+                break;
+            }
+        }
+        char out_line[256];
+        snprintf(out_line, sizeof(out_line), "AP\t%s\t%d\t%d\t%d\t%d\n",
+                 ap->ssid, ap->signal,
+                 is_protected(ap->flags) ? 1 : 0, saved, connected);
+        send_line(fd, out_line);
     }
     send_line(fd, "END\n");
 }
