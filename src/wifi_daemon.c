@@ -162,7 +162,7 @@ static void* event_thread(void* arg)
     char buf[BUF_SIZE];
     size_t len;
 
-    while (!g_stop && g_enabled) {
+    while (!g_stop) {
         pthread_mutex_lock(&g_ctrl_mutex);
         if (g_ctrl_ev == NULL || !g_enabled) {
             pthread_mutex_unlock(&g_ctrl_mutex);
