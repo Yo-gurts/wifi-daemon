@@ -9,8 +9,8 @@ set( CMAKE_SYSTEM_PROCESSOR     arm )
 
 # Set a toolchain path. You only need to set this if the toolchain isn't in
 # your system path. Don't forget a trailing path separator!
-# set(TOOLCHAIN_TOPDIR "${TOOLCHAIN_ROOT_DIR}")
-# set( TC_PATH "${TOOLCHAIN_ROOT_DIR}/bin/" )
+set(TOOLCHAIN_TOPDIR "${TOOLCHAIN_ROOT_DIR}")
+set( TC_PATH "${TOOLCHAIN_ROOT_DIR}/bin/" )
 
 # The toolchain prefix for all toolchain executables
 set( CROSS_COMPILE arm-none-linux-musleabihf- )

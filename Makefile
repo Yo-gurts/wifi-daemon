@@ -3,7 +3,7 @@
 
 CONFIG ?= ARM
 CMAKE_BUILD_TYPE ?= Release
-TOOLCHAIN_ROOT_DIR ?= /path/to/toolchain
+TOOLCHAIN_ROOT_DIR ?= /home/yogurt/Documents/sophgo/buildroot/host-tools/gcc/arm-gnu-toolchain-11.3.rel1-x86_64-arm-none-linux-musleabihf
 
 TOOLCHAIN_FILE :=
 BUILD_DIR :=

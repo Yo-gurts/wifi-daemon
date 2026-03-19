@@ -71,15 +71,5 @@ target_include_directories(wifi-daemon PRIVATE ${INCLUDE_DIRS})
 # third_party/wpa_ctrl/lib contains pre-built wpa_ctrl libraries for reference
 target_link_libraries(wifi-daemon PRIVATE m pthread)
 
-# Strip symbols in release builds
-if(CMAKE_BUILD_TYPE STREQUAL "Release" OR CMAKE_BUILD_TYPE STREQUAL "MinSizeRel")
-    if(CMAKE_OBJCOPY)
-        add_custom_command(TARGET wifi-daemon POST_BUILD
-            COMMAND ${CMAKE_OBJCOPY} -s $<TARGET_FILE:wifi-daemon>
-            COMMENT "Stripping symbols from wifi-daemon"
-        )
-    endif()
-endif()
-
 # Installation
 install(TARGETS wifi-daemon DESTINATION bin)
