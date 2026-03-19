@@ -91,6 +91,10 @@ int main(int argc, char *argv[]) {
     /* parent - wait for daemon to start */
     usleep(500000);
 
+    printf("\n=== Test 0: GET_STATUS (before enable) ===\n");
+    snprintf(cmd, sizeof(cmd), "GET_STATUS");
+    send_cmd(cmd, resp, sizeof(resp));
+
     printf("\n=== Test 1: SET_ENABLED ===\n");
     snprintf(cmd, sizeof(cmd), "SET_ENABLED\t1");
     send_cmd(cmd, NULL, 0);
@@ -114,13 +118,21 @@ int main(int argc, char *argv[]) {
         sleep(1);
     }
 
-    printf("\n=== Test 4: DISCONNECT ===\n");
+    printf("\n=== Test 4: GET_STATUS (after enable) ===\n");
+    snprintf(cmd, sizeof(cmd), "GET_STATUS");
+    send_cmd(cmd, resp, sizeof(resp));
+
+    printf("\n=== Test 5: DISCONNECT ===\n");
     snprintf(cmd, sizeof(cmd), "DISCONNECT");
     send_cmd(cmd, NULL, 0);
 
-    printf("\n=== Test 5: SET_ENABLED 0 ===\n");
+    printf("\n=== Test 6: SET_ENABLED 0 ===\n");
     snprintf(cmd, sizeof(cmd), "SET_ENABLED\t0");
     send_cmd(cmd, NULL, 0);
+
+    printf("\n=== Test 7: GET_STATUS (after disable) ===\n");
+    snprintf(cmd, sizeof(cmd), "GET_STATUS");
+    send_cmd(cmd, resp, sizeof(resp));
 
     kill(pid, SIGTERM);
     waitpid(pid, NULL, 0);
