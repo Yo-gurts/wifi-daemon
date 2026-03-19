@@ -43,9 +43,11 @@ typedef struct {
 } ap_entry_t;
 
 static volatile sig_atomic_t g_stop = 0;
+static volatile sig_atomic_t g_enabled = 0;  /* wifi enabled flag */
 static struct wpa_ctrl* g_ctrl = NULL;
 static struct wpa_ctrl* g_ctrl_ev = NULL;
 static pthread_mutex_t g_scan_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t g_ctrl_mutex = PTHREAD_MUTEX_INITIALIZER;
 static char g_scan_cache[BUF_SIZE];
 static int g_scan_valid = 0;
 static int g_scan_id = 0;  /* increment each scan, returned to client */
@@ -66,11 +68,14 @@ static void send_line(int fd, const char* line)
 
 static int ensure_ctrl(void)
 {
+    pthread_mutex_lock(&g_ctrl_mutex);
     if (g_ctrl != NULL) {
+        pthread_mutex_unlock(&g_ctrl_mutex);
         return 0;
     }
     g_ctrl = wpa_ctrl_open(WLAN_CTRL_PATH);
     if (g_ctrl == NULL) {
+        pthread_mutex_unlock(&g_ctrl_mutex);
         return -1;
     }
     /* open event monitor connection */
@@ -78,6 +83,7 @@ static int ensure_ctrl(void)
     if (g_ctrl_ev == NULL) {
         wpa_ctrl_close(g_ctrl);
         g_ctrl = NULL;
+        pthread_mutex_unlock(&g_ctrl_mutex);
         return -1;
     }
     if (wpa_ctrl_attach(g_ctrl_ev) != 0) {
@@ -85,13 +91,17 @@ static int ensure_ctrl(void)
         wpa_ctrl_close(g_ctrl);
         g_ctrl = NULL;
         g_ctrl_ev = NULL;
+        pthread_mutex_unlock(&g_ctrl_mutex);
         return -1;
     }
+    pthread_mutex_unlock(&g_ctrl_mutex);
     return 0;
 }
 
 static void close_ctrl(void)
 {
+    pthread_mutex_lock(&g_ctrl_mutex);
+    g_enabled = 0;
     if (g_ctrl != NULL) {
         wpa_ctrl_close(g_ctrl);
         g_ctrl = NULL;
@@ -101,6 +111,7 @@ static void close_ctrl(void)
         wpa_ctrl_close(g_ctrl_ev);
         g_ctrl_ev = NULL;
     }
+    pthread_mutex_unlock(&g_ctrl_mutex);
 }
 
 static int run_cmd(const char* cmd, char* out, size_t out_sz)
@@ -150,17 +161,17 @@ static void* event_thread(void* arg)
     char buf[BUF_SIZE];
     size_t len;
 
-    while (!g_stop) {
-        if (g_ctrl_ev == NULL) {
+    while (!g_stop && g_enabled) {
+        pthread_mutex_lock(&g_ctrl_mutex);
+        if (g_ctrl_ev == NULL || !g_enabled) {
+            pthread_mutex_unlock(&g_ctrl_mutex);
             usleep(100000);
             continue;
         }
 
-        len = sizeof(buf) - 1;
-        memset(buf, 0, sizeof(buf));
-
-        /* use poll on the fd */
         int fd = wpa_ctrl_get_fd(g_ctrl_ev);
+        pthread_mutex_unlock(&g_ctrl_mutex);
+
         if (fd < 0) {
             usleep(100000);
             continue;
@@ -169,16 +180,26 @@ static void* event_thread(void* arg)
         fd_set rfds;
         FD_ZERO(&rfds);
         FD_SET(fd, &rfds);
+        struct timeval tv = {1, 0};
 
-        int ret = select(fd + 1, &rfds, NULL, NULL, NULL);
+        int ret = select(fd + 1, &rfds, NULL, NULL, &tv);
+        if (!g_enabled) {
+            break;
+        }
         if (ret > 0 && FD_ISSET(fd, &rfds)) {
-            if (wpa_ctrl_recv(g_ctrl_ev, buf, &len) == 0) {
-                buf[len] = '\0';
-                /* check for scan results event */
-                if (strstr(buf, "CTRL-EVENT-SCAN-RESULTS") != NULL) {
-                    update_scan_cache();
+            pthread_mutex_lock(&g_ctrl_mutex);
+            if (g_ctrl_ev != NULL) {
+                len = sizeof(buf) - 1;
+                memset(buf, 0, sizeof(buf));
+                if (wpa_ctrl_recv(g_ctrl_ev, buf, &len) == 0) {
+                    buf[len] = '\0';
+                    /* check for scan results event */
+                    if (strstr(buf, "CTRL-EVENT-SCAN-RESULTS") != NULL) {
+                        update_scan_cache();
+                    }
                 }
             }
+            pthread_mutex_unlock(&g_ctrl_mutex);
         }
     }
     return NULL;
@@ -259,6 +280,12 @@ static void handle_set_enabled(int fd, const char* arg)
         ret = system("ifconfig wlan0 up");
         if (ret != 0) {
             send_line(fd, "ERR\tIF_UP\n");
+            return;
+        }
+        g_enabled = 1;
+        /* ensure ctrl is opened */
+        if (ensure_ctrl() != 0) {
+            send_line(fd, "ERR\tCTRL_OPEN\n");
             return;
         }
     } else {
