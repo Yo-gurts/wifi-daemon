@@ -1,6 +1,7 @@
-#include <stddef.h>
+#include "mlog.h"
 #include "proto/wifi_proto.h"
 #include "third_party/wpa_ctrl.h"
+#include <stddef.h>
 
 #include <errno.h>
 #include <pthread.h>
@@ -8,9 +9,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/select.h>
 #include <sys/socket.h>
 #include <sys/un.h>
-#include <sys/select.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -276,25 +277,31 @@ static void handle_set_enabled(int fd, const char* arg)
     int enable = (arg != NULL && strcmp(arg, "0") != 0) ? 1 : 0;
     int ret;
 
+    MLOG_INFO("SET_ENABLED: %d", enable);
     if (enable) {
         ret = system("ifconfig wlan0 up");
         if (ret != 0) {
+            MLOG_ERR("ifconfig wlan0 up failed: %d", ret);
             send_line(fd, "ERR\tIF_UP\n");
             return;
         }
         g_enabled = 1;
         /* ensure ctrl is opened */
         if (ensure_ctrl() != 0) {
+            MLOG_ERR("ensure_ctrl failed");
             send_line(fd, "ERR\tCTRL_OPEN\n");
             return;
         }
+        MLOG_INFO("wifi enabled");
     } else {
         ret = system("ifconfig wlan0 down");
         if (ret != 0) {
+            MLOG_ERR("ifconfig wlan0 down failed: %d", ret);
             send_line(fd, "ERR\tIF_DOWN\n");
             return;
         }
         close_ctrl();
+        MLOG_INFO("wifi disabled");
     }
     send_line(fd, "OK\tSTATE\n");
 }
@@ -304,11 +311,14 @@ static void handle_scan_start(int fd)
     char out[BUF_SIZE];
     char resp[64];
 
+    MLOG_INFO("SCAN_START");
     if (run_cmd("SCAN", out, sizeof(out)) != 0) {
+        MLOG_ERR("SCAN command failed");
         send_line(fd, "ERR\tSCAN_START\n");
         return;
     }
     if (strstr(out, "OK") == NULL) {
+        MLOG_ERR("SCAN command not OK: %s", out);
         send_line(fd, "ERR\tSCAN_START\n");
         return;
     }
@@ -318,6 +328,7 @@ static void handle_scan_start(int fd)
     g_scan_valid = 0;
     pthread_mutex_unlock(&g_scan_mutex);
     snprintf(resp, sizeof(resp), "OK\tSCAN_STARTED\t%d\n", g_scan_id);
+    MLOG_INFO("scan started, scan_id=%d", g_scan_id);
     send_line(fd, resp);
 }
 
@@ -390,18 +401,22 @@ static void handle_scan_get(int fd)
                 break;
             }
         }
+        MLOG_DBG("scan result: ssid=%s signal=%d secured=%d saved=%d connected=%d",
+            ap->ssid, ap->signal, is_protected(ap->flags) ? 1 : 0, saved, connected);
         char out_line[512];
         snprintf(out_line, sizeof(out_line), "AP\t%.63s\t%d\t%d\t%d\t%d\n",
             ap->ssid, ap->signal,
             is_protected(ap->flags) ? 1 : 0, saved, connected);
         send_line(fd, out_line);
     }
+    MLOG_INFO("SCAN_GET: scan_id=%d ap_count=%d", scan_id, ap_count);
     send_line(fd, "END\n");
 }
 
 static void handle_get_status(int fd)
 {
     char resp[64];
+    MLOG_INFO("GET_STATUS: %d", g_enabled);
     snprintf(resp, sizeof(resp), "OK\tSTATUS\t%d\n", g_enabled);
     send_line(fd, resp);
 }
@@ -459,11 +474,13 @@ static void handle_connect(int fd, const char* ssid, const char* password)
         return;
     }
 
+    MLOG_INFO("CONNECT: ssid=%s", ssid);
     known_count = parse_known_networks(known, MAX_NETWORK_LINES);
     id = find_network_id_by_ssid(ssid, known, known_count);
 
     if (id < 0) {
         if (run_cmd("ADD_NETWORK", out, sizeof(out)) != 0) {
+            MLOG_ERR("ADD_NETWORK failed");
             send_line(fd, "ERR\tADD_NETWORK\n");
             return;
         }
@@ -471,6 +488,7 @@ static void handle_connect(int fd, const char* ssid, const char* password)
 
         snprintf(cmd, sizeof(cmd), "SET_NETWORK %d ssid \"%s\"", id, ssid);
         if (run_cmd(cmd, out, sizeof(out)) != 0 || strstr(out, "OK") == NULL) {
+            MLOG_ERR("SET_NETWORK ssid failed");
             send_line(fd, "ERR\tSET_SSID\n");
             return;
         }
@@ -481,6 +499,7 @@ static void handle_connect(int fd, const char* ssid, const char* password)
             snprintf(cmd, sizeof(cmd), "SET_NETWORK %d psk \"%s\"", id, password);
         }
         if (run_cmd(cmd, out, sizeof(out)) != 0 || strstr(out, "OK") == NULL) {
+            MLOG_ERR("SET_NETWORK psk failed");
             send_line(fd, "ERR\tSET_PSK\n");
             return;
         }
@@ -488,6 +507,7 @@ static void handle_connect(int fd, const char* ssid, const char* password)
 
     snprintf(cmd, sizeof(cmd), "SELECT_NETWORK %d", id);
     if (run_cmd(cmd, out, sizeof(out)) != 0 || strstr(out, "OK") == NULL) {
+        MLOG_ERR("SELECT_NETWORK failed");
         send_line(fd, "ERR\tSELECT_NETWORK\n");
         return;
     }
@@ -495,10 +515,12 @@ static void handle_connect(int fd, const char* ssid, const char* password)
     (void)run_cmd("SAVE_CONFIG", out, sizeof(out));
 
     if (wait_connected(ssid) != 0) {
+        MLOG_ERR("CONNECT timeout: %s", ssid);
         send_line(fd, "ERR\tCONNECT_TIMEOUT\n");
         return;
     }
 
+    MLOG_INFO("CONNECTED: %s", ssid);
     send_line(fd, "OK\tCONNECTED\n");
 }
 
@@ -546,6 +568,9 @@ int main(void)
     int listen_fd;
     struct sockaddr_un addr;
     pthread_t ev_tid;
+
+    MLOG_OPEN();
+    MLOG_INFO("wifi-daemon starting...");
 
     signal(SIGINT, on_sigint);
     signal(SIGTERM, on_sigint);
