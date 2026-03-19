@@ -40,6 +40,7 @@ static struct wpa_ctrl* g_ctrl_ev = NULL;
 static pthread_mutex_t g_scan_mutex = PTHREAD_MUTEX_INITIALIZER;
 static char g_scan_cache[BUF_SIZE];
 static int g_scan_valid = 0;
+static int g_scan_id = 0;  /* increment each scan, returned to client */
 
 static void on_sigint(int sig)
 {
@@ -266,6 +267,7 @@ static void handle_set_enabled(int fd, const char* arg)
 static void handle_scan_start(int fd)
 {
     char out[BUF_SIZE];
+    char resp[64];
 
     if (run_cmd("SCAN", out, sizeof(out)) != 0) {
         send_line(fd, "ERR\tSCAN_START\n");
@@ -275,7 +277,13 @@ static void handle_scan_start(int fd)
         send_line(fd, "ERR\tSCAN_START\n");
         return;
     }
-    send_line(fd, "OK\tSCAN_STARTED\n");
+    /* increment scan_id and invalidate cache */
+    g_scan_id++;
+    pthread_mutex_lock(&g_scan_mutex);
+    g_scan_valid = 0;
+    pthread_mutex_unlock(&g_scan_mutex);
+    snprintf(resp, sizeof(resp), "OK\tSCAN_STARTED\t%d\n", g_scan_id);
+    send_line(fd, resp);
 }
 
 static void handle_scan_get(int fd)
@@ -284,12 +292,16 @@ static void handle_scan_get(int fd)
     int known_count;
     char* saveptr;
     char* line;
+    char resp[64];
+    int scan_id;
 
     pthread_mutex_lock(&g_scan_mutex);
+    scan_id = g_scan_id;
     if (!g_scan_valid) {
         pthread_mutex_unlock(&g_scan_mutex);
         /* no scan results yet */
-        send_line(fd, "OK\tSCAN\n");
+        snprintf(resp, sizeof(resp), "OK\tSCAN\t%d\n", scan_id);
+        send_line(fd, resp);
         send_line(fd, "END\n");
         return;
     }
@@ -300,7 +312,8 @@ static void handle_scan_get(int fd)
 
     known_count = parse_known_networks(known, MAX_NETWORK_LINES);
 
-    send_line(fd, "OK\tSCAN\n");
+    snprintf(resp, sizeof(resp), "OK\tSCAN\t%d\n", scan_id);
+    send_line(fd, resp);
 
     saveptr = NULL;
     line = strtok_r(scan_buf, "\n", &saveptr); /* header */

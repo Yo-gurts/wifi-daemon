@@ -9,7 +9,7 @@
 
 #define SOCKET_PATH "/tmp/aicam_wifi.sock"
 
-static int send_cmd(const char *cmd) {
+static int send_cmd(const char *cmd, char *resp, size_t resp_sz) {
     int fd;
     struct sockaddr_un addr;
     char buf[1024];
@@ -41,17 +41,38 @@ static int send_cmd(const char *cmd) {
     n = read(fd, buf, sizeof(buf) - 1);
     if (n > 0) {
         buf[n] = '\0';
-        printf("<<< %s\n", buf);
+        printf("<<< %s", buf);
+        if (resp && resp_sz > 0) {
+            snprintf(resp, resp_sz, "%s", buf);
+        }
     }
 
     close(fd);
     return 0;
 }
 
+static int parse_scan_id(const char *resp) {
+    /* parse scan_id from response like "OK\tSCAN_STARTED\t1\n" or "OK\tSCAN\t1\n" */
+    int id = -1;
+    const char *p = strstr(resp, "SCAN_STARTED");
+    if (!p) {
+        p = strstr(resp, "SCAN");
+    }
+    if (p) {
+        while (*p && *p != '\t') p++;
+        if (*p == '\t') {
+            id = atoi(p + 1);
+        }
+    }
+    return id;
+}
+
 int main(int argc, char *argv[]) {
     const char *daemon_path = (argc > 1) ? argv[1] : "./bin/wifi-daemon";
     char cmd[256];
+    char resp[1024];
     int pid;
+    int my_scan_id = -1;
 
     printf("Starting wifi-daemon: %s\n", daemon_path);
     pid = fork();
@@ -72,27 +93,34 @@ int main(int argc, char *argv[]) {
 
     printf("\n=== Test 1: SET_ENABLED ===\n");
     snprintf(cmd, sizeof(cmd), "SET_ENABLED\t1");
-    send_cmd(cmd);
+    send_cmd(cmd, NULL, 0);
 
     printf("\n=== Test 2: SCAN_START ===\n");
     snprintf(cmd, sizeof(cmd), "SCAN_START");
-    send_cmd(cmd);
+    send_cmd(cmd, resp, sizeof(resp));
+    my_scan_id = parse_scan_id(resp);
+    printf("    [my_scan_id=%d]\n", my_scan_id);
 
-    /* give daemon time to receive scan results from wpa_supplicant */
-    printf("Waiting for scan results...\n");
-    sleep(3);
-
-    printf("\n=== Test 3: SCAN_GET ===\n");
-    snprintf(cmd, sizeof(cmd), "SCAN_GET");
-    send_cmd(cmd);
+    printf("\n=== Test 3: SCAN_GET (polling 10 times) ===\n");
+    for (int i = 0; i < 10; i++) {
+        printf("[%d/10] ", i + 1);
+        fflush(stdout);
+        snprintf(cmd, sizeof(cmd), "SCAN_GET");
+        send_cmd(cmd, resp, sizeof(resp));
+        int id = parse_scan_id(resp);
+        if (id >= 0) {
+            printf("    [scan_id=%d %s]\n", id, (id >= my_scan_id) ? "(>= my scan)" : "(stale)");
+        }
+        sleep(1);
+    }
 
     printf("\n=== Test 4: DISCONNECT ===\n");
     snprintf(cmd, sizeof(cmd), "DISCONNECT");
-    send_cmd(cmd);
+    send_cmd(cmd, NULL, 0);
 
     printf("\n=== Test 5: SET_ENABLED 0 ===\n");
     snprintf(cmd, sizeof(cmd), "SET_ENABLED\t0");
-    send_cmd(cmd);
+    send_cmd(cmd, NULL, 0);
 
     kill(pid, SIGTERM);
     waitpid(pid, NULL, 0);
