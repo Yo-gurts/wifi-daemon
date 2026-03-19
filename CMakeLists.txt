@@ -73,3 +73,9 @@ target_link_libraries(wifi-daemon PRIVATE m pthread)
 
 # Installation
 install(TARGETS wifi-daemon DESTINATION bin)
+
+# Test IPC client
+add_executable(test_ipc ${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/test_ipc.c)
+target_include_directories(test_ipc PRIVATE ${INCLUDE_DIRS})
+target_link_libraries(test_ipc PRIVATE m pthread)
+install(TARGETS test_ipc DESTINATION bin)
