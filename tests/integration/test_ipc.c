@@ -67,26 +67,11 @@ static int parse_scan_id(const char *resp) {
     return id;
 }
 
-int main(int argc, char *argv[]) {
-    const char *daemon_path = (argc > 1) ? argv[1] : "./bin/wifi-daemon";
+int main()
+{
     char cmd[256];
     char resp[1024];
-    int pid;
     int my_scan_id = -1;
-
-    printf("Starting wifi-daemon: %s\n", daemon_path);
-    pid = fork();
-    if (pid < 0) {
-        perror("fork");
-        return 1;
-    }
-
-    if (pid == 0) {
-        /* child */
-        execl(daemon_path, daemon_path, NULL);
-        perror("execl");
-        return 1;
-    }
 
     /* parent - wait for daemon to start */
     usleep(500000);
@@ -160,9 +145,6 @@ int main(int argc, char *argv[]) {
     printf("\n=== Test 11: GET_STATUS (after enable) ===\n");
     snprintf(cmd, sizeof(cmd), "GET_STATUS");
     send_cmd(cmd, resp, sizeof(resp));
-
-    kill(pid, SIGTERM);
-    waitpid(pid, NULL, 0);
 
     printf("\n=== All tests passed ===\n");
     return 0;

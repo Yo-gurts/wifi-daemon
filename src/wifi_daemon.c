@@ -167,6 +167,21 @@ static void* event_thread(void* arg)
         pthread_mutex_lock(&g_ctrl_mutex);
         if (g_ctrl_ev == NULL || !g_enabled) {
             pthread_mutex_unlock(&g_ctrl_mutex);
+            /* If enabled but no ctrl connection, try to reconnect */
+            if (g_enabled) {
+                pthread_mutex_lock(&g_ctrl_mutex);
+                if (g_ctrl == NULL) {
+                    g_ctrl = wpa_ctrl_open(WLAN_CTRL_PATH);
+                }
+                if (g_ctrl != NULL && g_ctrl_ev == NULL) {
+                    g_ctrl_ev = wpa_ctrl_open2(WLAN_CTRL_PATH, NULL);
+                    if (g_ctrl_ev != NULL && wpa_ctrl_attach(g_ctrl_ev) != 0) {
+                        wpa_ctrl_close(g_ctrl_ev);
+                        g_ctrl_ev = NULL;
+                    }
+                }
+                pthread_mutex_unlock(&g_ctrl_mutex);
+            }
             usleep(100000);
             continue;
         }
