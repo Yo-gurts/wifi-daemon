@@ -26,9 +26,16 @@ make
 mkdir -p build/arm-none-linux-musleabihf
 cd build/arm-none-linux-musleabihf
 cmake -DCMAKE_TOOLCHAIN_FILE=../../toolchains/arm-none-linux-musleabihf.cmake \
-      -DTOOLCHAIN_ROOT_DIR=/path/to/toolchain ../..
+      ../..
 make
 file bin/wifi-daemon  # 应显示 ARM 架构
+```
+
+如工具链不在 `PATH`，可额外指定：
+
+```bash
+cmake -DCMAKE_TOOLCHAIN_FILE=../../toolchains/arm-none-linux-musleabihf.cmake \
+      -DTOOLCHAIN_ROOT_DIR=/path/to/toolchain ../..
 ```
 
 ### 支持的架构

@@ -10,7 +10,11 @@ set( CMAKE_SYSTEM_PROCESSOR     arm )
 # Set a toolchain path. You only need to set this if the toolchain isn't in
 # your system path. Don't forget a trailing path separator!
 set(TOOLCHAIN_TOPDIR "${TOOLCHAIN_ROOT_DIR}")
-set( TC_PATH "${TOOLCHAIN_ROOT_DIR}/bin/" )
+if(TOOLCHAIN_ROOT_DIR)
+    set(TC_PATH "${TOOLCHAIN_ROOT_DIR}/bin/")
+else()
+    set(TC_PATH "")
+endif()
 
 # The toolchain prefix for all toolchain executables
 set( CROSS_COMPILE arm-none-linux-musleabihf- )
@@ -25,7 +29,9 @@ set(CMAKE_CXX_COMPILER ${TC_PATH}${CROSS_COMPILE}g++)
 # To build the tests, we need to set where the target environment containing
 # the required library is. On Debian-like systems, this is
 # /usr/aarch64-linux-gnu.
-SET(CMAKE_FIND_ROOT_PATH $ENV{TOOLCHAIN_TOPDIR})
+if(TOOLCHAIN_ROOT_DIR)
+    set(CMAKE_FIND_ROOT_PATH "${TOOLCHAIN_ROOT_DIR}")
+endif()
 # search for programs in the build host directories
 SET(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
 # for libraries and headers in the target directories
