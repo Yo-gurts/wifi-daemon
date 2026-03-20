@@ -23,7 +23,7 @@ Unix Socket 路径：`/tmp/aicam_wifi.sock`
 
 | 命令 | 参数 | 说明 | 返回格式 |
 |------|------|------|----------|
-| `GET_STATUS` | 无 | 获取 WiFi 开关状态 | `OK\tSTATUS\t<enabled>` |
+| `GET_STATUS` | 无 | 获取 WiFi 状态（开关/连接/信号） | `OK\tSTATUS\t<enabled>\t<connected>\t<rssi_dbm>` |
 | `SET_ENABLED` | `0`/`1` | 禁用/启用 WiFi | `OK\tSTATE` |
 | `SCAN_START` | 无 | 开始扫描 | `OK\tSCAN_STARTED\t<scan_id>` |
 | `SCAN_GET` | 无 | 获取扫描结果 | `OK\tSCAN\t<scan_id>` + AP 列表 + `END` |

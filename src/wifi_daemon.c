@@ -325,6 +325,53 @@ static int is_auth_failed_event(const char* ev)
     return 0;
 }
 
+static int is_connected_from_status(const char* status)
+{
+    char local[BUF_SIZE];
+    char* saveptr = NULL;
+    char* line;
+    int completed = 0;
+
+    if (status == NULL || status[0] == '\0') {
+        return 0;
+    }
+
+    snprintf(local, sizeof(local), "%s", status);
+    line = strtok_r(local, "\n", &saveptr);
+    while (line != NULL) {
+        if (strcmp(line, "wpa_state=COMPLETED") == 0) {
+            completed = 1;
+            break;
+        }
+        line = strtok_r(NULL, "\n", &saveptr);
+    }
+
+    return completed;
+}
+
+static int get_rssi_dbm(void)
+{
+    char out[BUF_SIZE];
+    char local[BUF_SIZE];
+    char* saveptr = NULL;
+    char* line;
+
+    if (run_cmd("SIGNAL_POLL", out, sizeof(out)) != 0) {
+        return -1;
+    }
+
+    snprintf(local, sizeof(local), "%s", out);
+    line = strtok_r(local, "\n", &saveptr);
+    while (line != NULL) {
+        if (strncmp(line, "RSSI=", 5) == 0) {
+            return atoi(line + 5);
+        }
+        line = strtok_r(NULL, "\n", &saveptr);
+    }
+
+    return -1;
+}
+
 static int wait_connected(const char* ssid)
 {
     time_t start;
@@ -654,9 +701,21 @@ static void handle_scan_get(int fd)
 
 static void handle_get_status(int fd)
 {
-    char resp[64];
-    MLOG_INFO("GET_STATUS: %d", g_enabled);
-    snprintf(resp, sizeof(resp), "OK\tSTATUS\t%d\n", g_enabled);
+    int enabled = g_enabled ? 1 : 0;
+    int connected = 0;
+    int rssi_dbm = -1;
+    char status[BUF_SIZE];
+    char resp[96];
+
+    if (enabled && run_cmd("STATUS", status, sizeof(status)) == 0) {
+        connected = is_connected_from_status(status) ? 1 : 0;
+        if (connected) {
+            rssi_dbm = get_rssi_dbm();
+        }
+    }
+
+    MLOG_INFO("GET_STATUS: enabled=%d connected=%d rssi=%d", enabled, connected, rssi_dbm);
+    snprintf(resp, sizeof(resp), "OK\tSTATUS\t%d\t%d\t%d\n", enabled, connected, rssi_dbm);
     send_line(fd, resp);
 }
 
