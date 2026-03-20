@@ -175,6 +175,14 @@ static void* event_thread(void* arg)
         pthread_mutex_unlock(&g_ctrl_mutex);
 
         if (fd < 0) {
+            /* connection broken, try to reconnect */
+            pthread_mutex_lock(&g_ctrl_mutex);
+            if (g_ctrl_ev != NULL) {
+                wpa_ctrl_detach(g_ctrl_ev);
+                wpa_ctrl_close(g_ctrl_ev);
+                g_ctrl_ev = NULL;
+            }
+            pthread_mutex_unlock(&g_ctrl_mutex);
             usleep(100000);
             continue;
         }
@@ -346,6 +354,28 @@ static void handle_scan_start(int fd)
     pthread_mutex_lock(&g_scan_mutex);
     g_scan_valid = 0;
     pthread_mutex_unlock(&g_scan_mutex);
+
+    /* Wait for scan to complete and update cache synchronously */
+    MLOG_INFO("SCAN_START: waiting for scan to complete...");
+    sleep(1);
+
+    /* Directly fetch scan results to update cache */
+    memset(out, 0, sizeof(out));
+    size_t len = sizeof(out) - 1;
+    if (g_ctrl != NULL) {
+        int ret = wpa_ctrl_request(g_ctrl, "SCAN_RESULTS", 12, out, &len, NULL);
+        if (ret == 0 && len > 0) {
+            out[len] = '\0';
+            pthread_mutex_lock(&g_scan_mutex);
+            snprintf(g_scan_cache, sizeof(g_scan_cache), "%s", out);
+            g_scan_valid = 1;
+            pthread_mutex_unlock(&g_scan_mutex);
+            MLOG_INFO("SCAN_START: cache updated, len=%zu", len);
+        } else {
+            MLOG_ERR("SCAN_START: SCAN_RESULTS failed, ret=%d len=%zu", ret, len);
+        }
+    }
+
     snprintf(resp, sizeof(resp), "OK\tSCAN_STARTED\t%d\n", g_scan_id);
     MLOG_INFO("scan started, scan_id=%d", g_scan_id);
     send_line(fd, resp);
