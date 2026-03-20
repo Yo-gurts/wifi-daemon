@@ -2,7 +2,7 @@
 # Default target: ARM cross-compilation
 
 CONFIG ?= ARM
-CMAKE_BUILD_TYPE ?= Release
+CMAKE_BUILD_TYPE ?= Debug
 
 TOOLCHAIN_FILE :=
 BUILD_DIR :=

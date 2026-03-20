@@ -16,10 +16,19 @@
 #include <unistd.h>
 
 #define WLAN_CTRL_PATH "/var/run/wpa_supplicant/wlan0"
+#define WPA_CTRL_CLI_PATH_CMD "/tmp/wpa_ctrl_wifi_daemon_cmd"
+#define WPA_CTRL_CLI_PATH_EVT "/tmp/wpa_ctrl_wifi_daemon_evt"
+#define WPA_CTRL_CLI_PATH_WAIT "/tmp/wpa_ctrl_wifi_daemon_wait"
 #define MAX_SCAN_LINES 128
 #define MAX_NETWORK_LINES 128
 #define BUF_SIZE 8192
 #define CONNECT_TIMEOUT_SEC 20
+
+typedef enum {
+    CONNECT_WAIT_OK = 0,
+    CONNECT_WAIT_TIMEOUT = -1,
+    CONNECT_WAIT_AUTH_FAILED = -2
+} connect_wait_result_t;
 
 typedef struct {
     int network_id;
@@ -72,7 +81,7 @@ static void send_line(int fd, const char* line)
     p = line;
     left = strlen(line);
     while (left > 0) {
-        ssize_t n = write(fd, p, left);
+        ssize_t n = send(fd, p, left, MSG_NOSIGNAL);
         if (n < 0) {
             if (errno == EINTR) {
                 continue;
@@ -94,13 +103,13 @@ static int ensure_ctrl(void)
         pthread_mutex_unlock(&g_ctrl_mutex);
         return 0;
     }
-    g_ctrl = wpa_ctrl_open(WLAN_CTRL_PATH);
+    g_ctrl = wpa_ctrl_open2(WLAN_CTRL_PATH, WPA_CTRL_CLI_PATH_CMD);
     if (g_ctrl == NULL) {
         pthread_mutex_unlock(&g_ctrl_mutex);
         return -1;
     }
     /* open event monitor connection */
-    g_ctrl_ev = wpa_ctrl_open2(WLAN_CTRL_PATH, NULL);
+    g_ctrl_ev = wpa_ctrl_open2(WLAN_CTRL_PATH, WPA_CTRL_CLI_PATH_EVT);
     if (g_ctrl_ev == NULL) {
         wpa_ctrl_close(g_ctrl);
         g_ctrl = NULL;
@@ -188,10 +197,10 @@ static void* event_thread(void* arg)
             /* If enabled but no ctrl connection, try to reconnect */
             if (g_enabled && g_ctrl_ev == NULL) {
                 if (g_ctrl == NULL) {
-                    g_ctrl = wpa_ctrl_open(WLAN_CTRL_PATH);
+                    g_ctrl = wpa_ctrl_open2(WLAN_CTRL_PATH, WPA_CTRL_CLI_PATH_CMD);
                 }
                 if (g_ctrl != NULL) {
-                    g_ctrl_ev = wpa_ctrl_open2(WLAN_CTRL_PATH, NULL);
+                    g_ctrl_ev = wpa_ctrl_open2(WLAN_CTRL_PATH, WPA_CTRL_CLI_PATH_EVT);
                     if (g_ctrl_ev != NULL && wpa_ctrl_attach(g_ctrl_ev) != 0) {
                         wpa_ctrl_close(g_ctrl_ev);
                         g_ctrl_ev = NULL;
@@ -248,6 +257,7 @@ static void* event_thread(void* arg)
             }
         }
     }
+    MLOG_INFO("WIFI-DAEMON stoped!!!");
     return NULL;
 }
 
@@ -300,13 +310,59 @@ static int find_network_id_by_ssid(const char* ssid, known_network_t* list, int 
     return -1;
 }
 
+static int is_auth_failed_event(const char* ev)
+{
+    if (ev == NULL) {
+        return 0;
+    }
+
+    if (strstr(ev, "reason=WRONG_KEY") != NULL) {
+        return 1;
+    }
+    if (strstr(ev, "pre-shared key may be incorrect") != NULL) {
+        return 1;
+    }
+    return 0;
+}
+
 static int wait_connected(const char* ssid)
 {
     time_t start;
     char status[BUF_SIZE];
+    struct wpa_ctrl* ctrl_ev_local = NULL;
 
     start = time(NULL);
+    ctrl_ev_local = wpa_ctrl_open2(WLAN_CTRL_PATH, WPA_CTRL_CLI_PATH_WAIT);
+    if (ctrl_ev_local != NULL) {
+        if (wpa_ctrl_attach(ctrl_ev_local) != 0) {
+            wpa_ctrl_close(ctrl_ev_local);
+            ctrl_ev_local = NULL;
+        }
+    }
+
     while ((time(NULL) - start) < CONNECT_TIMEOUT_SEC) {
+        if (ctrl_ev_local != NULL) {
+            int ev_fd = wpa_ctrl_get_fd(ctrl_ev_local);
+            if (ev_fd >= 0) {
+                fd_set rfds;
+                struct timeval tv = { 0, 100000 };
+                FD_ZERO(&rfds);
+                FD_SET(ev_fd, &rfds);
+                if (select(ev_fd + 1, &rfds, NULL, NULL, &tv) > 0 && FD_ISSET(ev_fd, &rfds)) {
+                    size_t ev_len = sizeof(status) - 1;
+                    memset(status, 0, sizeof(status));
+                    if (wpa_ctrl_recv(ctrl_ev_local, status, &ev_len) == 0) {
+                        status[ev_len] = '\0';
+                        if (is_auth_failed_event(status)) {
+                            wpa_ctrl_detach(ctrl_ev_local);
+                            wpa_ctrl_close(ctrl_ev_local);
+                            return CONNECT_WAIT_AUTH_FAILED;
+                        }
+                    }
+                }
+            }
+        }
+
         if (run_cmd("STATUS", status, sizeof(status)) == 0) {
             int completed = 0;
             int ssid_match = 0;
@@ -321,12 +377,39 @@ static int wait_connected(const char* ssid)
                 line = strtok_r(NULL, "\n", &saveptr);
             }
             if (completed && ssid_match) {
+                if (ctrl_ev_local != NULL) {
+                    wpa_ctrl_detach(ctrl_ev_local);
+                    wpa_ctrl_close(ctrl_ev_local);
+                }
                 return 0;
             }
         }
         usleep(200 * 1000);
     }
-    return -1;
+
+    if (ctrl_ev_local != NULL) {
+        wpa_ctrl_detach(ctrl_ev_local);
+        wpa_ctrl_close(ctrl_ev_local);
+    }
+    return CONNECT_WAIT_TIMEOUT;
+}
+
+static void forget_network_id(int id)
+{
+    char cmd[64];
+    char out[BUF_SIZE];
+
+    if (id < 0) {
+        return;
+    }
+
+    snprintf(cmd, sizeof(cmd), "REMOVE_NETWORK %d", id);
+    if (run_cmd(cmd, out, sizeof(out)) != 0 || strstr(out, "OK") == NULL) {
+        MLOG_ERR("REMOVE_NETWORK failed for id=%d", id);
+        return;
+    }
+    (void)run_cmd("SAVE_CONFIG", out, sizeof(out));
+    MLOG_INFO("forgot network id=%d after auth failure", id);
 }
 
 static int quote_wpa_value(const char* in, char* out, size_t out_sz)
@@ -488,6 +571,7 @@ static void handle_scan_get(int fd)
     int known_count;
     char resp[64];
     int scan_id;
+    char scan_buf[BUF_SIZE];
     ap_entry_t aps[MAX_SCAN_LINES];
     int ap_count = 0;
 
@@ -495,15 +579,20 @@ static void handle_scan_get(int fd)
     scan_id = g_scan_id;
     if (!g_scan_valid) {
         pthread_mutex_unlock(&g_scan_mutex);
-        /* no scan results yet */
-        MLOG_INFO("SCAN_GET: scan_id=%d, cache not ready", scan_id);
-        snprintf(resp, sizeof(resp), "OK\tSCAN\t%d\n", scan_id);
-        send_line(fd, resp);
-        send_line(fd, "END\n");
-        return;
+        /* Fallback: actively pull SCAN_RESULTS in case event was missed. */
+        update_scan_cache();
+        pthread_mutex_lock(&g_scan_mutex);
+        scan_id = g_scan_id;
+        if (!g_scan_valid) {
+            pthread_mutex_unlock(&g_scan_mutex);
+            MLOG_INFO("SCAN_GET: scan_id=%d, cache not ready", scan_id);
+            snprintf(resp, sizeof(resp), "OK\tSCAN\t%d\n", scan_id);
+            send_line(fd, resp);
+            send_line(fd, "END\n");
+            return;
+        }
     }
     /* copy cache under lock */
-    char scan_buf[BUF_SIZE];
     snprintf(scan_buf, sizeof(scan_buf), "%s", g_scan_cache);
     pthread_mutex_unlock(&g_scan_mutex);
 
@@ -674,10 +763,19 @@ static void handle_connect(int fd, const char* ssid, const char* password)
 
     (void)run_cmd("SAVE_CONFIG", out, sizeof(out));
 
-    if (wait_connected(ssid) != 0) {
-        MLOG_ERR("CONNECT timeout: %s", ssid);
-        send_line(fd, "ERR\tCONNECT_TIMEOUT\n");
-        return;
+    {
+        int wait_ret = wait_connected(ssid);
+        if (wait_ret == CONNECT_WAIT_AUTH_FAILED) {
+            MLOG_ERR("CONNECT auth failed: %s", ssid);
+            forget_network_id(id);
+            send_line(fd, "ERR\tCONNECT_AUTH_FAILED\n");
+            return;
+        }
+        if (wait_ret != CONNECT_WAIT_OK) {
+            MLOG_ERR("CONNECT timeout: %s", ssid);
+            send_line(fd, "ERR\tCONNECT_TIMEOUT\n");
+            return;
+        }
     }
 
     MLOG_INFO("CONNECTED: %s", ssid);
@@ -734,6 +832,7 @@ int main(void)
 
     signal(SIGINT, on_sigint);
     signal(SIGTERM, on_sigint);
+    signal(SIGPIPE, SIG_IGN);
 
     /* start event listener thread */
     pthread_create(&ev_tid, NULL, event_thread, NULL);

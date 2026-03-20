@@ -60,3 +60,21 @@ bash tests/integration/test_ipc.sh
 # ARM: 使用交叉编译工具链
 # x86_64: gcc -o /tmp/test_proto tests/unit/test_proto.c -lcmocka && /tmp/test_proto
 ```
+
+## CLI 手工调试
+
+项目新增 `wifi-cli`，用于直接通过 Unix Socket 与 `wifi-daemon` 交互。
+
+```bash
+# 交互模式
+./wifi-cli
+
+# 单次命令模式
+./wifi-cli status
+./wifi-cli enable 1
+./wifi-cli scan
+./wifi-cli aps
+./wifi-cli connect "MyWiFi" "12345678"
+./wifi-cli disconnect
+./wifi-cli forget "MyWiFi"
+```
