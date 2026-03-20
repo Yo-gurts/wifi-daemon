@@ -134,6 +134,33 @@ int main(int argc, char *argv[]) {
     snprintf(cmd, sizeof(cmd), "GET_STATUS");
     send_cmd(cmd, resp, sizeof(resp));
 
+    printf("\n=== Test 8: SET_ENABLED ===\n");
+    snprintf(cmd, sizeof(cmd), "SET_ENABLED\t1");
+    send_cmd(cmd, NULL, 0);
+
+    printf("\n=== Test 9: SCAN_START ===\n");
+    snprintf(cmd, sizeof(cmd), "SCAN_START");
+    send_cmd(cmd, resp, sizeof(resp));
+    my_scan_id = parse_scan_id(resp);
+    printf("    [my_scan_id=%d]\n", my_scan_id);
+
+    printf("\n=== Test 10: SCAN_GET (polling 10 times) ===\n");
+    for (int i = 0; i < 10; i++) {
+        printf("[%d/10] ", i + 1);
+        fflush(stdout);
+        snprintf(cmd, sizeof(cmd), "SCAN_GET");
+        send_cmd(cmd, resp, sizeof(resp));
+        int id = parse_scan_id(resp);
+        if (id >= 0) {
+            printf("    [scan_id=%d %s]\n", id, (id >= my_scan_id) ? "(>= my scan)" : "(stale)");
+        }
+        sleep(1);
+    }
+
+    printf("\n=== Test 11: GET_STATUS (after enable) ===\n");
+    snprintf(cmd, sizeof(cmd), "GET_STATUS");
+    send_cmd(cmd, resp, sizeof(resp));
+
     kill(pid, SIGTERM);
     waitpid(pid, NULL, 0);
 
