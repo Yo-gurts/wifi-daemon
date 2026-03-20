@@ -61,10 +61,28 @@ static void on_sigint(int sig)
 
 static void send_line(int fd, const char* line)
 {
+    const char* p;
+    size_t left;
+
     if (line == NULL) {
         return;
     }
-    (void)write(fd, line, strlen(line));
+    p = line;
+    left = strlen(line);
+    while (left > 0) {
+        ssize_t n = write(fd, p, left);
+        if (n < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            return;
+        }
+        if (n == 0) {
+            return;
+        }
+        p += (size_t)n;
+        left -= (size_t)n;
+    }
 }
 
 static int ensure_ctrl(void)
@@ -128,9 +146,15 @@ static int run_cmd(const char* cmd, char* out, size_t out_sz)
         return -1;
     }
 
+    pthread_mutex_lock(&g_ctrl_mutex);
+    if (g_ctrl == NULL) {
+        pthread_mutex_unlock(&g_ctrl_mutex);
+        return -1;
+    }
     len = out_sz - 1;
     memset(out, 0, out_sz);
     ret = wpa_ctrl_request(g_ctrl, cmd, strlen(cmd), out, &len, NULL);
+    pthread_mutex_unlock(&g_ctrl_mutex);
     if (ret != 0) {
         return -1;
     }
@@ -140,18 +164,11 @@ static int run_cmd(const char* cmd, char* out, size_t out_sz)
 
 static void update_scan_cache(void)
 {
-    char buf[BUF_SIZE];
-    size_t len = sizeof(buf) - 1;
+    char out[BUF_SIZE];
 
-    if (g_ctrl == NULL) {
-        return;
-    }
-
-    memset(buf, 0, sizeof(buf));
-    if (wpa_ctrl_request(g_ctrl, "SCAN_RESULTS", 12, buf, &len, NULL) == 0) {
-        buf[len] = '\0';
+    if (run_cmd("SCAN_RESULTS", out, sizeof(out)) == 0) {
         pthread_mutex_lock(&g_scan_mutex);
-        snprintf(g_scan_cache, sizeof(g_scan_cache), "%s", buf);
+        snprintf(g_scan_cache, sizeof(g_scan_cache), "%s", out);
         g_scan_valid = 1;
         pthread_mutex_unlock(&g_scan_mutex);
     }
@@ -207,9 +224,10 @@ static void* event_thread(void* arg)
 
         int ret = select(fd + 1, &rfds, NULL, NULL, &tv);
         if (!g_enabled) {
-            break;
+            continue;
         }
         if (ret > 0 && FD_ISSET(fd, &rfds)) {
+            int scan_ready = 0;
             pthread_mutex_lock(&g_ctrl_mutex);
             if (g_ctrl_ev != NULL) {
                 len = sizeof(buf) - 1;
@@ -218,11 +236,14 @@ static void* event_thread(void* arg)
                     buf[len] = '\0';
                     /* check for scan results event */
                     if (strstr(buf, "CTRL-EVENT-SCAN-RESULTS") != NULL) {
-                        update_scan_cache();
+                        scan_ready = 1;
                     }
                 }
             }
             pthread_mutex_unlock(&g_ctrl_mutex);
+            if (scan_ready) {
+                update_scan_cache();
+            }
         }
     }
     return NULL;
@@ -285,13 +306,62 @@ static int wait_connected(const char* ssid)
     start = time(NULL);
     while ((time(NULL) - start) < CONNECT_TIMEOUT_SEC) {
         if (run_cmd("STATUS", status, sizeof(status)) == 0) {
-            if (strstr(status, "wpa_state=COMPLETED") && strstr(status, "ssid=") && strstr(status, ssid)) {
+            int completed = 0;
+            int ssid_match = 0;
+            char* saveptr = NULL;
+            char* line = strtok_r(status, "\n", &saveptr);
+            while (line != NULL) {
+                if (strcmp(line, "wpa_state=COMPLETED") == 0) {
+                    completed = 1;
+                } else if (strncmp(line, "ssid=", 5) == 0 && strcmp(line + 5, ssid) == 0) {
+                    ssid_match = 1;
+                }
+                line = strtok_r(NULL, "\n", &saveptr);
+            }
+            if (completed && ssid_match) {
                 return 0;
             }
         }
         usleep(200 * 1000);
     }
     return -1;
+}
+
+static int quote_wpa_value(const char* in, char* out, size_t out_sz)
+{
+    size_t i;
+    size_t pos = 0;
+
+    if (in == NULL || out == NULL || out_sz < 3) {
+        return -1;
+    }
+
+    out[pos++] = '"';
+    for (i = 0; in[i] != '\0'; i++) {
+        unsigned char ch = (unsigned char)in[i];
+        if (ch < 0x20 || ch == 0x7f) {
+            return -1;
+        }
+        if (ch == '"' || ch == '\\') {
+            if (pos + 2 >= out_sz) {
+                return -1;
+            }
+            out[pos++] = '\\';
+            out[pos++] = (char)ch;
+            continue;
+        }
+        if (pos + 1 >= out_sz) {
+            return -1;
+        }
+        out[pos++] = (char)ch;
+    }
+
+    if (pos + 2 > out_sz) {
+        return -1;
+    }
+    out[pos++] = '"';
+    out[pos] = '\0';
+    return 0;
 }
 
 static void handle_set_enabled(int fd, const char* arg)
@@ -362,35 +432,13 @@ static void handle_scan_start(int fd)
         return;
     }
 
-    /* increment scan_id and invalidate cache */
-    g_scan_id++;
     pthread_mutex_lock(&g_scan_mutex);
+    g_scan_id++;
     g_scan_valid = 0;
+    snprintf(resp, sizeof(resp), "OK\tSCAN_STARTED\t%d\n", g_scan_id);
     pthread_mutex_unlock(&g_scan_mutex);
 
-    /* Wait for scan to complete and update cache synchronously */
-    MLOG_INFO("SCAN_START: waiting for scan to complete...");
-    sleep(1);
-
-    /* Directly fetch scan results to update cache */
-    memset(out, 0, sizeof(out));
-    size_t len = sizeof(out) - 1;
-    if (g_ctrl != NULL) {
-        int ret = wpa_ctrl_request(g_ctrl, "SCAN_RESULTS", 12, out, &len, NULL);
-        if (ret == 0 && len > 0) {
-            out[len] = '\0';
-            pthread_mutex_lock(&g_scan_mutex);
-            snprintf(g_scan_cache, sizeof(g_scan_cache), "%s", out);
-            g_scan_valid = 1;
-            pthread_mutex_unlock(&g_scan_mutex);
-            MLOG_INFO("SCAN_START: cache updated, len=%zu", len);
-        } else {
-            MLOG_ERR("SCAN_START: SCAN_RESULTS failed, ret=%d len=%zu", ret, len);
-        }
-    }
-
-    snprintf(resp, sizeof(resp), "OK\tSCAN_STARTED\t%d\n", g_scan_id);
-    MLOG_INFO("scan started, scan_id=%d", g_scan_id);
+    MLOG_INFO("scan started async, scan_id=%d", g_scan_id);
     send_line(fd, resp);
 }
 
@@ -430,13 +478,15 @@ static void handle_scan_get(int fd)
     known_count = parse_known_networks(known, MAX_NETWORK_LINES);
 
     /* parse all entries */
-    char *saveptr;
-    char *line = strtok_r(scan_buf, "\n", &saveptr);
+    char* saveptr = NULL;
+    char* line = strtok_r(scan_buf, "\n", &saveptr);
     line = strtok_r(NULL, "\n", &saveptr); /* skip header */
     while (line != NULL && ap_count < MAX_SCAN_LINES) {
-        ap_entry_t *ap = &aps[ap_count];
+        ap_entry_t* ap = &aps[ap_count];
+        memset(ap, 0, sizeof(*ap));
         if (sscanf(line, "%63[^\t]\t%d\t%d\t%127[^\t]\t%63[^\n]",
-                   ap->bssid, &ap->freq, &ap->signal, ap->flags, ap->ssid) >= 4) {
+                ap->bssid, &ap->freq, &ap->signal, ap->flags, ap->ssid)
+            == 5) {
             if (ap->ssid[0] != '\0') {
                 ap_count++;
             }
@@ -532,6 +582,8 @@ static void handle_connect(int fd, const char* ssid, const char* password)
     int known_count;
     int id;
     char cmd[256];
+    char quoted_ssid[WIFI_MAX_SSID_LEN * 2 + 4];
+    char quoted_password[WIFI_MAX_PASSWORD_LEN * 2 + 4];
     char out[BUF_SIZE];
 
     if (ssid == NULL || ssid[0] == '\0') {
@@ -551,7 +603,11 @@ static void handle_connect(int fd, const char* ssid, const char* password)
         }
         id = atoi(out);
 
-        snprintf(cmd, sizeof(cmd), "SET_NETWORK %d ssid \"%s\"", id, ssid);
+        if (quote_wpa_value(ssid, quoted_ssid, sizeof(quoted_ssid)) != 0) {
+            send_line(fd, "ERR\tEINVAL\n");
+            return;
+        }
+        snprintf(cmd, sizeof(cmd), "SET_NETWORK %d ssid %s", id, quoted_ssid);
         if (run_cmd(cmd, out, sizeof(out)) != 0 || strstr(out, "OK") == NULL) {
             MLOG_ERR("SET_NETWORK ssid failed");
             send_line(fd, "ERR\tSET_SSID\n");
@@ -561,7 +617,11 @@ static void handle_connect(int fd, const char* ssid, const char* password)
         if (password == NULL || password[0] == '\0') {
             snprintf(cmd, sizeof(cmd), "SET_NETWORK %d key_mgmt NONE", id);
         } else {
-            snprintf(cmd, sizeof(cmd), "SET_NETWORK %d psk \"%s\"", id, password);
+            if (quote_wpa_value(password, quoted_password, sizeof(quoted_password)) != 0) {
+                send_line(fd, "ERR\tEINVAL\n");
+                return;
+            }
+            snprintf(cmd, sizeof(cmd), "SET_NETWORK %d psk %s", id, quoted_password);
         }
         if (run_cmd(cmd, out, sizeof(out)) != 0 || strstr(out, "OK") == NULL) {
             MLOG_ERR("SET_NETWORK psk failed");
