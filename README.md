@@ -75,6 +75,7 @@ bash tests/integration/test_ipc.sh
 ./wifi-cli scan
 ./wifi-cli aps
 ./wifi-cli connect "MyWiFi" "12345678"
+./wifi-cli connect_result
 ./wifi-cli disconnect
 ./wifi-cli forget "MyWiFi"
 ```

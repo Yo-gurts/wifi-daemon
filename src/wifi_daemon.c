@@ -30,6 +30,13 @@ typedef enum {
     CONNECT_WAIT_AUTH_FAILED = -2
 } connect_wait_result_t;
 
+typedef enum {
+    CONNECT_STATE_IDLE = 0,
+    CONNECT_STATE_CONNECTING = 1,
+    CONNECT_STATE_CONNECTED = 2,
+    CONNECT_STATE_FAILED = 3
+} connect_state_t;
+
 typedef struct {
     int network_id;
     char ssid[WIFI_MAX_SSID_LEN];
@@ -54,15 +61,25 @@ typedef struct {
     char flags[128];
 } ap_entry_t;
 
+typedef struct {
+    char ssid[WIFI_MAX_SSID_LEN];
+    char password[WIFI_MAX_PASSWORD_LEN];
+} connect_task_t;
+
 static volatile sig_atomic_t g_stop = 0;
 static volatile sig_atomic_t g_enabled = 0;  /* wifi enabled flag */
 static struct wpa_ctrl* g_ctrl = NULL;
 static struct wpa_ctrl* g_ctrl_ev = NULL;
 static pthread_mutex_t g_scan_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t g_ctrl_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t g_connect_mutex = PTHREAD_MUTEX_INITIALIZER;
 static char g_scan_cache[BUF_SIZE];
 static int g_scan_valid = 0;
 static int g_scan_id = 0;  /* increment each scan, returned to client */
+static int g_connect_worker_running = 0;
+static connect_state_t g_connect_state = CONNECT_STATE_IDLE;
+static char g_connect_error[64] = "NONE";
+static char g_connect_ssid[WIFI_MAX_SSID_LEN] = "";
 
 static void on_sigint(int sig)
 {
@@ -94,6 +111,46 @@ static void send_line(int fd, const char* line)
         p += (size_t)n;
         left -= (size_t)n;
     }
+}
+
+static void set_connect_status(connect_state_t state, const char* ssid, const char* error)
+{
+    pthread_mutex_lock(&g_connect_mutex);
+    g_connect_state = state;
+    if (ssid != NULL) {
+        snprintf(g_connect_ssid, sizeof(g_connect_ssid), "%s", ssid);
+    }
+    if (error != NULL) {
+        snprintf(g_connect_error, sizeof(g_connect_error), "%s", error);
+    }
+    pthread_mutex_unlock(&g_connect_mutex);
+}
+
+static int try_start_connect_worker(const char* ssid)
+{
+    int busy = 0;
+
+    pthread_mutex_lock(&g_connect_mutex);
+    if (g_connect_worker_running) {
+        busy = 1;
+    } else {
+        g_connect_worker_running = 1;
+        g_connect_state = CONNECT_STATE_CONNECTING;
+        snprintf(g_connect_ssid, sizeof(g_connect_ssid), "%s", ssid);
+        snprintf(g_connect_error, sizeof(g_connect_error), "%s", "NONE");
+    }
+    pthread_mutex_unlock(&g_connect_mutex);
+
+    return busy ? -1 : 0;
+}
+
+static void finish_connect_worker(connect_state_t state, const char* error)
+{
+    pthread_mutex_lock(&g_connect_mutex);
+    g_connect_worker_running = 0;
+    g_connect_state = state;
+    snprintf(g_connect_error, sizeof(g_connect_error), "%s", (error != NULL) ? error : "NONE");
+    pthread_mutex_unlock(&g_connect_mutex);
 }
 
 static int ensure_ctrl(void)
@@ -143,6 +200,8 @@ static void close_ctrl(void)
     }
     g_scan_valid = 0;
     pthread_mutex_unlock(&g_ctrl_mutex);
+
+    set_connect_status(CONNECT_STATE_IDLE, "", "NONE");
 }
 
 static int run_cmd(const char* cmd, char* out, size_t out_sz)
@@ -727,6 +786,7 @@ static void handle_disconnect(int fd)
         send_line(fd, "ERR\tDISCONNECT\n");
         return;
     }
+    set_connect_status(CONNECT_STATE_IDLE, "", "NONE");
     send_line(fd, "OK\tDISCONNECTED\n");
 }
 
@@ -759,7 +819,7 @@ static void handle_forget(int fd, const char* ssid)
     send_line(fd, "OK\tFORGOT\n");
 }
 
-static void handle_connect(int fd, const char* ssid, const char* password)
+static const char* connect_once(const char* ssid, const char* password)
 {
     known_network_t known[MAX_NETWORK_LINES];
     int known_count;
@@ -770,8 +830,7 @@ static void handle_connect(int fd, const char* ssid, const char* password)
     char out[BUF_SIZE];
 
     if (ssid == NULL || ssid[0] == '\0') {
-        send_line(fd, "ERR\tEINVAL\n");
-        return;
+        return "EINVAL";
     }
 
     MLOG_INFO("CONNECT: ssid=%s", ssid);
@@ -781,43 +840,37 @@ static void handle_connect(int fd, const char* ssid, const char* password)
     if (id < 0) {
         if (run_cmd("ADD_NETWORK", out, sizeof(out)) != 0) {
             MLOG_ERR("ADD_NETWORK failed");
-            send_line(fd, "ERR\tADD_NETWORK\n");
-            return;
+            return "ADD_NETWORK";
         }
         id = atoi(out);
 
         if (quote_wpa_value(ssid, quoted_ssid, sizeof(quoted_ssid)) != 0) {
-            send_line(fd, "ERR\tEINVAL\n");
-            return;
+            return "EINVAL";
         }
         snprintf(cmd, sizeof(cmd), "SET_NETWORK %d ssid %s", id, quoted_ssid);
         if (run_cmd(cmd, out, sizeof(out)) != 0 || strstr(out, "OK") == NULL) {
             MLOG_ERR("SET_NETWORK ssid failed");
-            send_line(fd, "ERR\tSET_SSID\n");
-            return;
+            return "SET_SSID";
         }
 
         if (password == NULL || password[0] == '\0') {
             snprintf(cmd, sizeof(cmd), "SET_NETWORK %d key_mgmt NONE", id);
         } else {
             if (quote_wpa_value(password, quoted_password, sizeof(quoted_password)) != 0) {
-                send_line(fd, "ERR\tEINVAL\n");
-                return;
+                return "EINVAL";
             }
             snprintf(cmd, sizeof(cmd), "SET_NETWORK %d psk %s", id, quoted_password);
         }
         if (run_cmd(cmd, out, sizeof(out)) != 0 || strstr(out, "OK") == NULL) {
             MLOG_ERR("SET_NETWORK psk failed");
-            send_line(fd, "ERR\tSET_PSK\n");
-            return;
+            return "SET_PSK";
         }
     }
 
     snprintf(cmd, sizeof(cmd), "SELECT_NETWORK %d", id);
     if (run_cmd(cmd, out, sizeof(out)) != 0 || strstr(out, "OK") == NULL) {
         MLOG_ERR("SELECT_NETWORK failed");
-        send_line(fd, "ERR\tSELECT_NETWORK\n");
-        return;
+        return "SELECT_NETWORK";
     }
 
     (void)run_cmd("SAVE_CONFIG", out, sizeof(out));
@@ -827,18 +880,93 @@ static void handle_connect(int fd, const char* ssid, const char* password)
         if (wait_ret == CONNECT_WAIT_AUTH_FAILED) {
             MLOG_ERR("CONNECT auth failed: %s", ssid);
             forget_network_id(id);
-            send_line(fd, "ERR\tCONNECT_AUTH_FAILED\n");
-            return;
+            return "CONNECT_AUTH_FAILED";
         }
         if (wait_ret != CONNECT_WAIT_OK) {
             MLOG_ERR("CONNECT timeout: %s", ssid);
-            send_line(fd, "ERR\tCONNECT_TIMEOUT\n");
-            return;
+            return "CONNECT_TIMEOUT";
         }
     }
 
     MLOG_INFO("CONNECTED: %s", ssid);
-    send_line(fd, "OK\tCONNECTED\n");
+    return NULL;
+}
+
+static void* connect_worker_thread(void* arg)
+{
+    connect_task_t* task = (connect_task_t*)arg;
+    const char* err = NULL;
+
+    if (task == NULL) {
+        finish_connect_worker(CONNECT_STATE_FAILED, "INTERNAL");
+        return NULL;
+    }
+
+    err = connect_once(task->ssid, task->password);
+    if (err == NULL) {
+        finish_connect_worker(CONNECT_STATE_CONNECTED, "NONE");
+    } else {
+        finish_connect_worker(CONNECT_STATE_FAILED, err);
+    }
+
+    free(task);
+    return NULL;
+}
+
+static void handle_connect(int fd, const char* ssid, const char* password)
+{
+    pthread_t tid;
+    connect_task_t* task;
+
+    if (ssid == NULL || ssid[0] == '\0') {
+        send_line(fd, "ERR\tEINVAL\n");
+        return;
+    }
+    if (!g_enabled) {
+        send_line(fd, "ERR\tWIFI_DISABLED\n");
+        return;
+    }
+    if (try_start_connect_worker(ssid) != 0) {
+        send_line(fd, "ERR\tCONNECT_BUSY\n");
+        return;
+    }
+
+    task = (connect_task_t*)calloc(1, sizeof(*task));
+    if (task == NULL) {
+        finish_connect_worker(CONNECT_STATE_FAILED, "NOMEM");
+        send_line(fd, "ERR\tNOMEM\n");
+        return;
+    }
+    snprintf(task->ssid, sizeof(task->ssid), "%s", ssid);
+    if (password != NULL) {
+        snprintf(task->password, sizeof(task->password), "%s", password);
+    }
+
+    if (pthread_create(&tid, NULL, connect_worker_thread, task) != 0) {
+        free(task);
+        finish_connect_worker(CONNECT_STATE_FAILED, "THREAD_CREATE");
+        send_line(fd, "ERR\tTHREAD_CREATE\n");
+        return;
+    }
+    pthread_detach(tid);
+    send_line(fd, "OK\tCONNECTING\n");
+}
+
+static void handle_get_connect_result(int fd)
+{
+    char resp[256];
+    int state;
+    char error[64];
+    char ssid[WIFI_MAX_SSID_LEN];
+
+    pthread_mutex_lock(&g_connect_mutex);
+    state = (int)g_connect_state;
+    snprintf(error, sizeof(error), "%s", g_connect_error);
+    snprintf(ssid, sizeof(ssid), "%s", g_connect_ssid[0] != '\0' ? g_connect_ssid : "-");
+    pthread_mutex_unlock(&g_connect_mutex);
+
+    snprintf(resp, sizeof(resp), "OK\tCONNECT_RESULT\t%d\t%s\t%s\n", state, error, ssid);
+    send_line(fd, resp);
 }
 
 static void handle_client(int cfd)
@@ -874,6 +1002,8 @@ static void handle_client(int cfd)
             handle_forget(cfd, arg1);
         } else if (strcmp(cmd, "GET_STATUS") == 0) {
             handle_get_status(cfd);
+        } else if (strcmp(cmd, "GET_CONNECT_RESULT") == 0) {
+            handle_get_connect_result(cfd);
         } else {
             send_line(cfd, "ERR\tUNKNOWN_CMD\n");
         }

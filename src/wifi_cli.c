@@ -40,6 +40,7 @@ static void print_usage(void)
     printf("  scan\n");
     printf("  aps\n");
     printf("  connect <ssid> [password]\n");
+    printf("  connect_result\n");
     printf("  disconnect\n");
     printf("  forget <ssid>\n");
     printf("  raw|RAW <daemon_command>\n");
@@ -50,6 +51,7 @@ static void print_usage(void)
     printf("  SCAN_START\n");
     printf("  SCAN_GET\n");
     printf("  CONNECT <ssid> [password]\n");
+    printf("  GET_CONNECT_RESULT\n");
     printf("  DISCONNECT\n");
     printf("  FORGET <ssid>\n");
     printf("\n");
@@ -233,6 +235,10 @@ static int build_request_from_tokens(int argc, char* argv[], char* out, size_t o
             return snprintf(out, out_sz, "CONNECT\t%s\t%s", argv[1], argv[2]) > 0 ? 0 : -1;
         }
         return snprintf(out, out_sz, "CONNECT\t%s", argv[1]) > 0 ? 0 : -1;
+    }
+
+    if (cmd_eq(argv[0], "connect_result")) {
+        return snprintf(out, out_sz, "GET_CONNECT_RESULT") > 0 ? 0 : -1;
     }
 
     if (cmd_eq(argv[0], "disconnect")) {

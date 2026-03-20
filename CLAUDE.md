@@ -27,11 +27,14 @@ Unix Socket 路径：`/tmp/aicam_wifi.sock`
 | `SET_ENABLED` | `0`/`1` | 禁用/启用 WiFi | `OK\tSTATE` |
 | `SCAN_START` | 无 | 开始扫描 | `OK\tSCAN_STARTED\t<scan_id>` |
 | `SCAN_GET` | 无 | 获取扫描结果 | `OK\tSCAN\t<scan_id>` + AP 列表 + `END` |
-| `CONNECT` | `SSID\t密码` | 连接 WiFi | `OK\tCONNECTED` |
+| `CONNECT` | `SSID\t密码` | 异步发起连接 | `OK\tCONNECTING` |
+| `GET_CONNECT_RESULT` | 无 | 查询连接任务状态与错误信息 | `OK\tCONNECT_RESULT\t<state>\t<error>\t<ssid>` |
 | `DISCONNECT` | 无 | 断开连接 | `OK\tDISCONNECTED` |
 | `FORGET` | `SSID` | 删除已保存网络 | `OK\tFORGOT` |
 
 错误返回格式：`ERR\t<CODE>`
+
+`GET_CONNECT_RESULT` 状态值：`0=IDLE`，`1=CONNECTING`，`2=CONNECTED`，`3=FAILED`。
 
 ## 目录结构
 
