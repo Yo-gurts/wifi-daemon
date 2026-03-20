@@ -112,6 +112,7 @@ static void close_ctrl(void)
         wpa_ctrl_close(g_ctrl_ev);
         g_ctrl_ev = NULL;
     }
+    g_scan_valid = 0;
     pthread_mutex_unlock(&g_ctrl_mutex);
 }
 
@@ -285,6 +286,8 @@ static void handle_set_enabled(int fd, const char* arg)
             send_line(fd, "ERR\tIF_UP\n");
             return;
         }
+        /* give wpa_supplicant time to initialize after interface up */
+        usleep(500000);
         g_enabled = 1;
         /* ensure ctrl is opened */
         if (ensure_ctrl() != 0) {
