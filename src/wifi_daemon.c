@@ -22,7 +22,7 @@
 #define MAX_SCAN_LINES 128
 #define MAX_NETWORK_LINES 128
 #define BUF_SIZE 8192
-#define CONNECT_TIMEOUT_SEC 20
+#define CONNECT_TIMEOUT_SEC 12
 
 typedef enum {
     CONNECT_WAIT_OK = 0,
