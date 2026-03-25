@@ -2,6 +2,7 @@
 #include "proto/wifi_proto.h"
 #include "third_party/wpa_ctrl.h"
 #include <stddef.h>
+#include <stdint.h>
 
 #include <errno.h>
 #include <pthread.h>
@@ -328,6 +329,89 @@ static int is_protected(const char* flags)
     return (strstr(flags, "WPA") != NULL) || (strstr(flags, "WEP") != NULL) || (strstr(flags, "SAE") != NULL);
 }
 
+static int32_t hex_char_to_val(char c)
+{
+    if (c >= '0' && c <= '9') {
+        return c - '0';
+    }
+    if (c >= 'a' && c <= 'f') {
+        return 10 + (c - 'a');
+    }
+    if (c >= 'A' && c <= 'F') {
+        return 10 + (c - 'A');
+    }
+    return -1;
+}
+
+static void decode_wpa_hex_string(const char* src, char* dst, size_t dst_size)
+{
+    size_t di = 0;
+    size_t si = 0;
+
+    if (dst == NULL || dst_size == 0) {
+        return;
+    }
+    dst[0] = '\0';
+    if (src == NULL) {
+        return;
+    }
+
+    while (src[si] != '\0' && di < dst_size - 1) {
+        if (src[si] == '\\' &&
+            src[si + 1] == 'x' &&
+            src[si + 2] != '\0' &&
+            src[si + 3] != '\0') {
+            int32_t hi = hex_char_to_val(src[si + 2]);
+            int32_t lo = hex_char_to_val(src[si + 3]);
+            if (hi >= 0 && lo >= 0) {
+                dst[di++] = (char)((hi << 4) | lo);
+                si += 4;
+                continue;
+            }
+        }
+        dst[di++] = src[si++];
+    }
+    dst[di] = '\0';
+}
+
+static void upsert_ap_by_ssid(ap_entry_t* aps, int* ap_count, int max_count, const ap_entry_t* candidate)
+{
+    int i;
+    int existing_idx = -1;
+
+    if (aps == NULL || ap_count == NULL || candidate == NULL || candidate->ssid[0] == '\0') {
+        return;
+    }
+
+    for (i = 0; i < *ap_count; i++) {
+        if (strcmp(aps[i].ssid, candidate->ssid) == 0) {
+            existing_idx = i;
+            break;
+        }
+    }
+
+    if (existing_idx >= 0) {
+        ap_entry_t* existing = &aps[existing_idx];
+        if (candidate->signal > existing->signal) {
+            int saved = existing->saved || candidate->saved;
+            int connected = existing->connected || candidate->connected;
+            *existing = *candidate;
+            existing->saved = saved;
+            existing->connected = connected;
+        } else {
+            existing->saved = existing->saved || candidate->saved;
+            existing->connected = existing->connected || candidate->connected;
+        }
+        return;
+    }
+
+    if (*ap_count >= max_count) {
+        return;
+    }
+    aps[*ap_count] = *candidate;
+    (*ap_count)++;
+}
+
 static int parse_known_networks(known_network_t* list, int max_count)
 {
     char buf[BUF_SIZE];
@@ -343,10 +427,12 @@ static int parse_known_networks(known_network_t* list, int max_count)
     line = strtok_r(NULL, "\n", &saveptr);
     while (line != NULL && count < max_count) {
         int id = -1;
+        char raw_ssid[256] = {0};
         char ssid[WIFI_MAX_SSID_LEN] = {0};
         char bssid[128] = {0};
         char flags[128] = {0};
-        if (sscanf(line, "%d\t%63[^\t]\t%127[^\t]\t%127[^\n]", &id, ssid, bssid, flags) >= 2) {
+        if (sscanf(line, "%d\t%255[^\t]\t%127[^\t]\t%127[^\n]", &id, raw_ssid, bssid, flags) >= 2) {
+            decode_wpa_hex_string(raw_ssid, ssid, sizeof(ssid));
             list[count].network_id = id;
             snprintf(list[count].ssid, sizeof(list[count].ssid), "%s", ssid);
             snprintf(list[count].flags, sizeof(list[count].flags), "%s", flags);
@@ -662,7 +748,7 @@ static int get_current_ssid(char* out, size_t out_sz)
     line = strtok_r(status, "\n", &saveptr);
     while (line != NULL) {
         if (strncmp(line, "ssid=", 5) == 0) {
-            snprintf(out, out_sz, "%s", line + 5);
+            decode_wpa_hex_string(line + 5, out, out_sz);
             return 0;
         }
         line = strtok_r(NULL, "\n", &saveptr);
@@ -711,25 +797,27 @@ static void handle_scan_get(int fd)
     char* saveptr = NULL;
     char* line = strtok_r(scan_buf, "\n", &saveptr);
     line = strtok_r(NULL, "\n", &saveptr); /* skip header */
-    while (line != NULL && ap_count < MAX_SCAN_LINES) {
-        ap_entry_t* ap = &aps[ap_count];
-        memset(ap, 0, sizeof(*ap));
-        if (sscanf(line, "%63[^\t]\t%d\t%d\t%127[^\t]\t%63[^\n]",
-                ap->bssid, &ap->freq, &ap->signal, ap->flags, ap->ssid)
+    while (line != NULL) {
+        ap_entry_t candidate;
+        char raw_ssid[256] = {0};
+        memset(&candidate, 0, sizeof(candidate));
+        if (sscanf(line, "%63[^\t]\t%d\t%d\t%127[^\t]\t%255[^\n]",
+                candidate.bssid, &candidate.freq, &candidate.signal, candidate.flags, raw_ssid)
             == 5) {
-            if (ap->ssid[0] != '\0') {
-                ap->saved = 0;
-                ap->connected = (current_ssid[0] != '\0' && strcmp(ap->ssid, current_ssid) == 0) ? 1 : 0;
+            decode_wpa_hex_string(raw_ssid, candidate.ssid, sizeof(candidate.ssid));
+            if (candidate.ssid[0] != '\0') {
+                candidate.saved = 0;
+                candidate.connected = (current_ssid[0] != '\0' && strcmp(candidate.ssid, current_ssid) == 0) ? 1 : 0;
                 for (int j = 0; j < known_count; j++) {
-                    if (strcmp(ap->ssid, known[j].ssid) == 0) {
-                        ap->saved = 1;
+                    if (strcmp(candidate.ssid, known[j].ssid) == 0) {
+                        candidate.saved = 1;
                         if (strstr(known[j].flags, "[CURRENT]") != NULL) {
-                            ap->connected = 1;
+                            candidate.connected = 1;
                         }
                         break;
                     }
                 }
-                ap_count++;
+                upsert_ap_by_ssid(aps, &ap_count, MAX_SCAN_LINES, &candidate);
             }
         }
         line = strtok_r(NULL, "\n", &saveptr);
