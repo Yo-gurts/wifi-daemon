@@ -47,10 +47,6 @@
 #define MLOG_WARN(fmt, ...) syslog(LOG_WARNING, "UI-[%s:%d %s] " fmt, __FILENAME__, __LINE__, __func__, ##__VA_ARGS__)
 #define MLOG_NOTICE(fmt, ...) syslog(LOG_NOTICE, "UI-[%s:%d %s] " fmt, __FILENAME__, __LINE__, __func__, ##__VA_ARGS__)
 #define MLOG_INFO(fmt, ...) syslog(LOG_INFO, "UI-[%s:%d %s] " fmt, __FILENAME__, __LINE__, __func__, ##__VA_ARGS__)
-#ifdef DEBUG
 #define MLOG_DBG(fmt, ...) syslog(LOG_DEBUG, "UI-[%s:%d %s] " fmt, __FILENAME__, __LINE__, __func__, ##__VA_ARGS__)
-#else
-#define MLOG_DBG(fmt, ...)
-#endif
 
 #endif /* __MLOG_H_ */

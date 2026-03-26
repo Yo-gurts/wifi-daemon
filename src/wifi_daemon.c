@@ -82,6 +82,68 @@ static connect_state_t g_connect_state = CONNECT_STATE_IDLE;
 static char g_connect_error[64] = "NONE";
 static char g_connect_ssid[WIFI_MAX_SSID_LEN] = "";
 
+static void print_usage(const char* prog)
+{
+    fprintf(stderr, "Usage: %s [--log-level LEVEL]\n", prog);
+    fprintf(stderr, "  -l, --log-level LEVEL  debug|info|notice|warn|err|crit|alert|emerg (or 0-7)\n");
+    fprintf(stderr, "  -h, --help             show this help and exit\n");
+}
+
+static int parse_log_level(const char* value, int* out_level)
+{
+    char* endptr = NULL;
+    long lvl;
+
+    if (value == NULL || out_level == NULL) {
+        return -1;
+    }
+
+    lvl = strtol(value, &endptr, 10);
+    if (endptr != value && *endptr == '\0') {
+        /* syslog priorities are 0..7 (emerg..debug) */
+        if (lvl >= LOG_EMERG && lvl <= LOG_DEBUG) {
+            *out_level = (int)lvl;
+            return 0;
+        }
+        return -1;
+    }
+
+    if (strcmp(value, "debug") == 0) {
+        *out_level = LOG_DEBUG;
+        return 0;
+    }
+    if (strcmp(value, "info") == 0) {
+        *out_level = LOG_INFO;
+        return 0;
+    }
+    if (strcmp(value, "notice") == 0) {
+        *out_level = LOG_NOTICE;
+        return 0;
+    }
+    if (strcmp(value, "warn") == 0 || strcmp(value, "warning") == 0) {
+        *out_level = LOG_WARNING;
+        return 0;
+    }
+    if (strcmp(value, "err") == 0 || strcmp(value, "error") == 0) {
+        *out_level = LOG_ERR;
+        return 0;
+    }
+    if (strcmp(value, "crit") == 0 || strcmp(value, "critical") == 0) {
+        *out_level = LOG_CRIT;
+        return 0;
+    }
+    if (strcmp(value, "alert") == 0) {
+        *out_level = LOG_ALERT;
+        return 0;
+    }
+    if (strcmp(value, "emerg") == 0 || strcmp(value, "panic") == 0) {
+        *out_level = LOG_EMERG;
+        return 0;
+    }
+
+    return -1;
+}
+
 static void on_sigint(int sig)
 {
     (void)sig;
@@ -1098,14 +1160,38 @@ static void handle_client(int cfd)
     }
 }
 
-int main(void)
+int main(int argc, char** argv)
 {
     int listen_fd;
     struct sockaddr_un addr;
     pthread_t ev_tid;
+    int log_level = LOG_INFO;
+    int i;
+
+    for (i = 1; i < argc; i++) {
+        const char* arg = argv[i];
+        if (strcmp(arg, "-h") == 0 || strcmp(arg, "--help") == 0) {
+            print_usage(argv[0]);
+            return 0;
+        }
+        if (strcmp(arg, "-l") == 0 || strcmp(arg, "--log-level") == 0) {
+            if (i + 1 >= argc || parse_log_level(argv[i + 1], &log_level) != 0) {
+                fprintf(stderr, "invalid log level: %s\n", (i + 1 < argc) ? argv[i + 1] : "(null)");
+                print_usage(argv[0]);
+                return 1;
+            }
+            i++;
+            continue;
+        }
+        fprintf(stderr, "unknown argument: %s\n", arg);
+        print_usage(argv[0]);
+        return 1;
+    }
 
     MLOG_OPEN();
+    setlogmask(LOG_UPTO(log_level));
     MLOG_INFO("wifi-daemon starting...");
+    MLOG_INFO("log level set to %d", log_level);
 
     signal(SIGINT, on_sigint);
     signal(SIGTERM, on_sigint);

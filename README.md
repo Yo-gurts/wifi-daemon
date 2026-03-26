@@ -79,3 +79,15 @@ bash tests/integration/test_ipc.sh
 ./wifi-cli disconnect
 ./wifi-cli forget "MyWiFi"
 ```
+
+## 日志级别
+
+`wifi-daemon` 的日志级别改为启动参数控制（默认 `info`）：
+
+```bash
+./wifi-daemon --log-level info
+./wifi-daemon --log-level debug
+./wifi-daemon -l 7
+```
+
+支持级别：`debug|info|notice|warn|err|crit|alert|emerg`（或数字 `0-7`，其中 `7=debug`）。
