@@ -861,7 +861,7 @@ static void handle_get_status(int fd)
         }
     }
 
-    MLOG_INFO("GET_STATUS: enabled=%d connected=%d rssi=%d", enabled, connected, rssi_dbm);
+    MLOG_DBG("GET_STATUS: enabled=%d connected=%d rssi=%d", enabled, connected, rssi_dbm);
     snprintf(resp, sizeof(resp), "OK\tSTATUS\t%d\t%d\t%d\n", enabled, connected, rssi_dbm);
     send_line(fd, resp);
 }
