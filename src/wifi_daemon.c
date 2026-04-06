@@ -5,11 +5,13 @@
 #include <stdint.h>
 
 #include <errno.h>
+#include <net/if.h>
 #include <pthread.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/ioctl.h>
 #include <sys/select.h>
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -293,6 +295,28 @@ static int run_cmd(const char* cmd, char* out, size_t out_sz)
     }
     out[len] = '\0';
     return 0;
+}
+
+static int is_wlan_if_up(void)
+{
+    int sockfd;
+    struct ifreq ifr;
+    int ret;
+
+    sockfd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (sockfd < 0) {
+        return 0;
+    }
+
+    memset(&ifr, 0, sizeof(ifr));
+    snprintf(ifr.ifr_name, sizeof(ifr.ifr_name), "wlan0");
+    ret = ioctl(sockfd, SIOCGIFFLAGS, &ifr);
+    close(sockfd);
+    if (ret != 0) {
+        return 0;
+    }
+
+    return (ifr.ifr_flags & IFF_UP) ? 1 : 0;
 }
 
 static void update_scan_cache(void)
@@ -910,14 +934,13 @@ static void handle_scan_get(int fd)
 
 static void handle_get_status(int fd)
 {
-    int enabled = g_enabled ? 1 : 0;
+    int enabled = is_wlan_if_up();
     int connected = 0;
     int rssi_dbm = -1;
     char status[BUF_SIZE];
     char resp[96];
 
-    if (run_cmd("STATUS", status, sizeof(status)) == 0) {
-        enabled = 1;
+    if (enabled && run_cmd("STATUS", status, sizeof(status)) == 0) {
         connected = is_connected_from_status(status) ? 1 : 0;
         if (connected) {
             rssi_dbm = get_rssi_dbm();

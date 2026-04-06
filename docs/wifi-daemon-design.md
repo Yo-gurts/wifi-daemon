@@ -104,7 +104,7 @@
 ### 6.2 全局状态
 
 - `g_stop`：退出标志（SIGINT/SIGTERM 设置）
-- `g_enabled`：WiFi 启用标志（SET_ENABLED 设置）
+- `g_enabled`：WiFi 期望启用标志（由 `SET_ENABLED`/`CONNECT` 维护），用于控制事件线程与自愈逻辑
 - `g_ctrl`：到 `wpa_supplicant` 的控制连接（惰性初始化，可复用）
 - `g_ctrl_ev`：到 `wpa_supplicant` 的事件监控连接（用于异步接收扫描结果）
 - `g_scan_mutex`：`g_scan_cache` 的保护互斥锁
@@ -140,9 +140,14 @@
 ### 7.3 命令与响应
 
 0. `GET_STATUS`
-- 行为：查询 WiFi 开关状态
-- 成功：`OK\tSTATUS\t<enabled>`
-  - `enabled`: `0` 表示已禁用，`1` 表示已启用
+- 行为：
+  - 通过 `ioctl(SIOCGIFFLAGS)` 检查 `wlan0` 是否 `IFF_UP`，得到 `enabled`
+  - 仅在 `enabled=1` 时发送 `STATUS` 给 `wpa_supplicant` 判定连接态
+  - 仅在已连接时读取 RSSI
+- 成功：`OK\tSTATUS\t<enabled>\t<connected>\t<rssi_dbm>`
+  - `enabled`: `0` 表示接口不存在或未 UP，`1` 表示接口已 UP
+  - `connected`: `1` 表示 `wpa_state=COMPLETED` 且存在 `ssid=`
+  - `rssi_dbm`: 已连接时返回实时 RSSI，未连接为 `-1`
 
 1. `SET_ENABLED\t0|1`
 - 行为：`ifconfig wlan0 down|up`，启用时同时打开 wpa_ctrl 连接
