@@ -910,7 +910,7 @@ static void handle_scan_get(int fd)
 
 static void handle_get_status(int fd)
 {
-    int enabled = 0;
+    int enabled = g_enabled ? 1 : 0;
     int connected = 0;
     int rssi_dbm = -1;
     char status[BUF_SIZE];
@@ -923,7 +923,6 @@ static void handle_get_status(int fd)
             rssi_dbm = get_rssi_dbm();
         }
     }
-    g_enabled = enabled ? 1 : 0;
 
     MLOG_DBG("GET_STATUS: enabled=%d connected=%d rssi=%d", enabled, connected, rssi_dbm);
     snprintf(resp, sizeof(resp), "OK\tSTATUS\t%d\t%d\t%d\n", enabled, connected, rssi_dbm);
@@ -1075,8 +1074,11 @@ static void handle_connect(int fd, const char* ssid, const char* password)
         return;
     }
     if (!g_enabled) {
-        send_line(fd, "ERR\tWIFI_DISABLED\n");
-        return;
+        if (ensure_ctrl() != 0) {
+            send_line(fd, "ERR\tWIFI_DISABLED\n");
+            return;
+        }
+        g_enabled = 1;
     }
     if (try_start_connect_worker(ssid) != 0) {
         send_line(fd, "ERR\tCONNECT_BUSY\n");
