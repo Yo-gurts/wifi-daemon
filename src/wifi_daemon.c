@@ -910,18 +910,20 @@ static void handle_scan_get(int fd)
 
 static void handle_get_status(int fd)
 {
-    int enabled = g_enabled ? 1 : 0;
+    int enabled = 0;
     int connected = 0;
     int rssi_dbm = -1;
     char status[BUF_SIZE];
     char resp[96];
 
-    if (enabled && run_cmd("STATUS", status, sizeof(status)) == 0) {
+    if (run_cmd("STATUS", status, sizeof(status)) == 0) {
+        enabled = 1;
         connected = is_connected_from_status(status) ? 1 : 0;
         if (connected) {
             rssi_dbm = get_rssi_dbm();
         }
     }
+    g_enabled = enabled ? 1 : 0;
 
     MLOG_DBG("GET_STATUS: enabled=%d connected=%d rssi=%d", enabled, connected, rssi_dbm);
     snprintf(resp, sizeof(resp), "OK\tSTATUS\t%d\t%d\t%d\n", enabled, connected, rssi_dbm);
