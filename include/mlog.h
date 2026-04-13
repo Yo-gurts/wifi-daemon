@@ -40,13 +40,13 @@
 // - `LOG_NOTICE`: normal, but significant, condition
 // - `LOG_INFO`: informational message
 // - `LOG_DEBUG`: debug-level message
-#define MLOG_EMERG(fmt, ...) syslog(LOG_EMERG, "UI-[%s:%d %s] " fmt, __FILENAME__, __LINE__, __func__, ##__VA_ARGS__)
-#define MLOG_ALERT(fmt, ...) syslog(LOG_ALERT, "UI-[%s:%d %s] " fmt, __FILENAME__, __LINE__, __func__, ##__VA_ARGS__)
-#define MLOG_CRIT(fmt, ...) syslog(LOG_CRIT, "UI-[%s:%d %s] " fmt, __FILENAME__, __LINE__, __func__, ##__VA_ARGS__)
-#define MLOG_ERR(fmt, ...) syslog(LOG_ERR, "UI-[%s:%d %s] " fmt, __FILENAME__, __LINE__, __func__, ##__VA_ARGS__)
-#define MLOG_WARN(fmt, ...) syslog(LOG_WARNING, "UI-[%s:%d %s] " fmt, __FILENAME__, __LINE__, __func__, ##__VA_ARGS__)
-#define MLOG_NOTICE(fmt, ...) syslog(LOG_NOTICE, "UI-[%s:%d %s] " fmt, __FILENAME__, __LINE__, __func__, ##__VA_ARGS__)
-#define MLOG_INFO(fmt, ...) syslog(LOG_INFO, "UI-[%s:%d %s] " fmt, __FILENAME__, __LINE__, __func__, ##__VA_ARGS__)
-#define MLOG_DBG(fmt, ...) syslog(LOG_DEBUG, "UI-[%s:%d %s] " fmt, __FILENAME__, __LINE__, __func__, ##__VA_ARGS__)
+#define MLOG_EMERG(fmt, ...) syslog(LOG_EMERG, "[%s:%d %s] " fmt, __FILENAME__, __LINE__, __func__, ##__VA_ARGS__)
+#define MLOG_ALERT(fmt, ...) syslog(LOG_ALERT, "[%s:%d %s] " fmt, __FILENAME__, __LINE__, __func__, ##__VA_ARGS__)
+#define MLOG_CRIT(fmt, ...) syslog(LOG_CRIT, "[%s:%d %s] " fmt, __FILENAME__, __LINE__, __func__, ##__VA_ARGS__)
+#define MLOG_ERR(fmt, ...) syslog(LOG_ERR, "[%s:%d %s] " fmt, __FILENAME__, __LINE__, __func__, ##__VA_ARGS__)
+#define MLOG_WARN(fmt, ...) syslog(LOG_WARNING, "[%s:%d %s] " fmt, __FILENAME__, __LINE__, __func__, ##__VA_ARGS__)
+#define MLOG_NOTICE(fmt, ...) syslog(LOG_NOTICE, "[%s:%d %s] " fmt, __FILENAME__, __LINE__, __func__, ##__VA_ARGS__)
+#define MLOG_INFO(fmt, ...) syslog(LOG_INFO, "[%s:%d %s] " fmt, __FILENAME__, __LINE__, __func__, ##__VA_ARGS__)
+#define MLOG_DBG(fmt, ...) syslog(LOG_DEBUG, "[%s:%d %s] " fmt, __FILENAME__, __LINE__, __func__, ##__VA_ARGS__)
 
 #endif /* __MLOG_H_ */

@@ -687,7 +687,7 @@ static void forget_network_id(int id)
         return;
     }
     (void)run_cmd("SAVE_CONFIG", out, sizeof(out));
-    MLOG_INFO("forgot network id=%d after auth failure", id);
+    MLOG_INFO("forgot network id=%d after connect failure", id);
 }
 
 static int quote_wpa_value(const char* in, char* out, size_t out_sz)
@@ -998,6 +998,9 @@ static const char* connect_once(const char* ssid, const char* password)
     known_network_t known[MAX_NETWORK_LINES];
     int known_count;
     int id;
+    int is_new_network = 0;
+    int has_password = (password != NULL && password[0] != '\0');
+    int forget_on_failure = 0;
     char cmd[256];
     char quoted_ssid[WIFI_MAX_SSID_LEN * 2 + 4];
     char quoted_password[WIFI_MAX_PASSWORD_LEN * 2 + 4];
@@ -1017,6 +1020,8 @@ static const char* connect_once(const char* ssid, const char* password)
             return "ADD_NETWORK";
         }
         id = atoi(out);
+        is_new_network = 1;
+        forget_on_failure = 1;
 
         if (quote_wpa_value(ssid, quoted_ssid, sizeof(quoted_ssid)) != 0) {
             return "EINVAL";
@@ -1024,19 +1029,32 @@ static const char* connect_once(const char* ssid, const char* password)
         snprintf(cmd, sizeof(cmd), "SET_NETWORK %d ssid %s", id, quoted_ssid);
         if (run_cmd(cmd, out, sizeof(out)) != 0 || strstr(out, "OK") == NULL) {
             MLOG_ERR("SET_NETWORK ssid failed");
+            if (forget_on_failure) {
+                forget_network_id(id);
+            }
             return "SET_SSID";
         }
+    }
 
-        if (password == NULL || password[0] == '\0') {
-            snprintf(cmd, sizeof(cmd), "SET_NETWORK %d key_mgmt NONE", id);
-        } else {
-            if (quote_wpa_value(password, quoted_password, sizeof(quoted_password)) != 0) {
-                return "EINVAL";
-            }
-            snprintf(cmd, sizeof(cmd), "SET_NETWORK %d psk %s", id, quoted_password);
+    if (has_password) {
+        if (quote_wpa_value(password, quoted_password, sizeof(quoted_password)) != 0) {
+            return "EINVAL";
         }
+        snprintf(cmd, sizeof(cmd), "SET_NETWORK %d psk %s", id, quoted_password);
         if (run_cmd(cmd, out, sizeof(out)) != 0 || strstr(out, "OK") == NULL) {
             MLOG_ERR("SET_NETWORK psk failed");
+            if (forget_on_failure) {
+                forget_network_id(id);
+            }
+            return "SET_PSK";
+        }
+    } else if (is_new_network) {
+        snprintf(cmd, sizeof(cmd), "SET_NETWORK %d key_mgmt NONE", id);
+        if (run_cmd(cmd, out, sizeof(out)) != 0 || strstr(out, "OK") == NULL) {
+            MLOG_ERR("SET_NETWORK key_mgmt NONE failed");
+            if (forget_on_failure) {
+                forget_network_id(id);
+            }
             return "SET_PSK";
         }
     }
@@ -1044,23 +1062,31 @@ static const char* connect_once(const char* ssid, const char* password)
     snprintf(cmd, sizeof(cmd), "SELECT_NETWORK %d", id);
     if (run_cmd(cmd, out, sizeof(out)) != 0 || strstr(out, "OK") == NULL) {
         MLOG_ERR("SELECT_NETWORK failed");
+        if (forget_on_failure) {
+            forget_network_id(id);
+        }
         return "SELECT_NETWORK";
     }
-
-    (void)run_cmd("SAVE_CONFIG", out, sizeof(out));
 
     {
         int wait_ret = wait_connected(ssid);
         if (wait_ret == CONNECT_WAIT_AUTH_FAILED) {
             MLOG_ERR("CONNECT auth failed: %s", ssid);
-            forget_network_id(id);
+            if (forget_on_failure) {
+                forget_network_id(id);
+            }
             return "CONNECT_AUTH_FAILED";
         }
         if (wait_ret != CONNECT_WAIT_OK) {
             MLOG_ERR("CONNECT timeout: %s", ssid);
+            if (forget_on_failure) {
+                forget_network_id(id);
+            }
             return "CONNECT_TIMEOUT";
         }
     }
+
+    (void)run_cmd("SAVE_CONFIG", out, sizeof(out));
 
     MLOG_INFO("CONNECTED: %s", ssid);
     return NULL;
