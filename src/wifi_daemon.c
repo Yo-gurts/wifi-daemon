@@ -580,6 +580,36 @@ static int is_connected_from_status(const char* status)
     return completed;
 }
 
+static int status_connected_to_ssid(const char* status, const char* ssid)
+{
+    char local[BUF_SIZE];
+    char* saveptr = NULL;
+    char* line;
+    int completed = 0;
+    int ssid_match = 0;
+    char decoded_ssid[WIFI_MAX_SSID_LEN] = {0};
+
+    if (status == NULL || status[0] == '\0' || ssid == NULL || ssid[0] == '\0') {
+        return 0;
+    }
+
+    snprintf(local, sizeof(local), "%s", status);
+    line = strtok_r(local, "\n", &saveptr);
+    while (line != NULL) {
+        if (strcmp(line, "wpa_state=COMPLETED") == 0) {
+            completed = 1;
+        } else if (strncmp(line, "ssid=", 5) == 0) {
+            decode_wpa_hex_string(line + 5, decoded_ssid, sizeof(decoded_ssid));
+            if (strcmp(decoded_ssid, ssid) == 0) {
+                ssid_match = 1;
+            }
+        }
+        line = strtok_r(NULL, "\n", &saveptr);
+    }
+
+    return (completed && ssid_match) ? 1 : 0;
+}
+
 static int get_rssi_dbm(void)
 {
     char out[BUF_SIZE];
@@ -642,19 +672,7 @@ static int wait_connected(const char* ssid)
         }
 
         if (run_cmd("STATUS", status, sizeof(status)) == 0) {
-            int completed = 0;
-            int ssid_match = 0;
-            char* saveptr = NULL;
-            char* line = strtok_r(status, "\n", &saveptr);
-            while (line != NULL) {
-                if (strcmp(line, "wpa_state=COMPLETED") == 0) {
-                    completed = 1;
-                } else if (strncmp(line, "ssid=", 5) == 0 && strcmp(line + 5, ssid) == 0) {
-                    ssid_match = 1;
-                }
-                line = strtok_r(NULL, "\n", &saveptr);
-            }
-            if (completed && ssid_match) {
+            if (status_connected_to_ssid(status, ssid)) {
                 if (ctrl_ev_local != NULL) {
                     wpa_ctrl_detach(ctrl_ev_local);
                     wpa_ctrl_close(ctrl_ev_local);
